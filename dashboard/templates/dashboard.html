@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MLB HR Bot — Daily Card</title>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --green: #3fb950; --red: #f85149; --yellow: #d29922;
+      --blue: #58a6ff; --purple: #bc8cff; --text: #e6edf3;
+      --muted: #8b949e; --accent: #238636;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+    a { color: var(--blue); text-decoration: none; }
+
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 20px; font-weight: 700; color: var(--blue); }
+    header .date { color: var(--muted); font-size: 13px; }
+
+    .controls { padding: 16px 24px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .controls button { background: var(--accent); color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: opacity .15s; }
+    .controls button:hover { opacity: .85; }
+    .controls button.secondary { background: var(--surface); border: 1px solid var(--border); }
+    .controls .spinner { display: none; color: var(--muted); font-size: 13px; }
+    .controls .spinner.show { display: inline; }
+
+    .main { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 0 24px 24px; }
+    @media(max-width: 900px) { .main { grid-template-columns: 1fr; } }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .card-header { padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+    .card-body { padding: 0; }
+
+    /* ABCD picks */
+    .pick { padding: 14px 16px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 40px 1fr auto; gap: 12px; align-items: start; }
+    .pick:last-child { border-bottom: none; }
+    .pick-label { font-size: 22px; font-weight: 900; text-align: center; }
+    .pick-label.A { color: #f8c000; }
+    .pick-label.B { color: var(--green); }
+    .pick-label.C { color: var(--blue); }
+    .pick-label.D { color: var(--purple); }
+    .pick-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+    .pick-stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+    .stat { display: flex; flex-direction: column; font-size: 11px; }
+    .stat-label { color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .stat-value { font-weight: 700; font-size: 13px; }
+    .edge-pos { color: var(--green); }
+    .edge-neg { color: var(--red); }
+    .reasons { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tag { background: rgba(88,166,255,.12); color: var(--blue); border: 1px solid rgba(88,166,255,.25); padding: 2px 7px; border-radius: 12px; font-size: 11px; }
+    .pick-right { text-align: right; }
+    .odds-big { font-size: 20px; font-weight: 900; color: var(--green); }
+    .stake { font-size: 11px; color: var(--muted); }
+    .ev { font-size: 12px; }
+    .ev.pos { color: var(--green); }
+    .ev.neg { color: var(--red); }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; }
+    th { padding: 8px 12px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); border-bottom: 1px solid var(--border); background: rgba(255,255,255,.02); }
+    td { padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.03); }
+    .green { color: var(--green); }
+    .red { color: var(--red); }
+    .muted { color: var(--muted); }
+
+    /* Parlays */
+    .parlay-block { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .parlay-block:last-child { border-bottom: none; }
+    .parlay-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--purple); margin-bottom: 4px; }
+    .parlay-players { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .parlay-meta { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
+    .parlay-meta span strong { color: var(--text); }
+
+    /* ROI table */
+    .roi-good { color: var(--green); font-weight: 700; }
+    .roi-bad { color: var(--red); font-weight: 700; }
+
+    /* No data */
+    .no-data { padding: 40px; text-align: center; color: var(--muted); }
+    .no-data h2 { font-size: 18px; margin-bottom: 10px; }
+    .no-data p { font-size: 13px; line-height: 1.6; }
+
+    /* Full-width sections */
+    .full-width { grid-column: 1 / -1; }
+
+    /* AI verdict badges */
+    .ai-verdict { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: .3px; margin-bottom: 5px; }
+    .ai-verdict.STRONG\ BET { background: rgba(63,185,80,.2); color: #3fb950; border: 1px solid rgba(63,185,80,.4); }
+    .ai-verdict.LEAN\ BET   { background: rgba(88,166,255,.15); color: #58a6ff; border: 1px solid rgba(88,166,255,.3); }
+    .ai-verdict.MARGINAL    { background: rgba(210,153,34,.15); color: #d29922; border: 1px solid rgba(210,153,34,.3); }
+    .ai-verdict.PASS        { background: rgba(248,81,73,.15); color: #f85149; border: 1px solid rgba(248,81,73,.3); }
+    .ai-one-liner { font-size: 12px; color: var(--muted); font-style: italic; margin-bottom: 5px; }
+    .ai-details { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; }
+    .ai-bull { font-size: 11px; color: var(--green); }
+    .ai-bear { font-size: 11px; color: var(--red); }
+    .ai-sharp { font-size: 11px; color: var(--purple); grid-column: 1/-1; }
+
+    /* Card summary */
+    .card-summary { background: rgba(88,166,255,.07); border: 1px solid rgba(88,166,255,.2); border-radius: 8px; padding: 14px 18px; margin: 0 24px 16px; font-size: 13px; line-height: 1.7; color: var(--text); }
+    .card-summary strong { color: var(--blue); display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+
+    /* Toast */
+    #toast { position: fixed; bottom: 24px; right: 24px; background: var(--accent); color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 13px; display: none; z-index: 999; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>⚾ MLB HR Bot</h1>
+  <div class="date" id="hdr-date">{{ date }}</div>
+</header>
+
+<div class="controls">
+  <button onclick="runPipeline('full')">▶ Run Full Day Now</button>
+  <button class="secondary" onclick="runPipeline('morning')">🌅 Morning Run</button>
+  <button class="secondary" onclick="runPipeline('post_lineup')">📋 Post-Lineup Run</button>
+  <a href="/api/export/json?date={{ date }}"><button class="secondary">⬇ Export JSON</button></a>
+  <a href="/api/export/csv?date={{ date }}"><button class="secondary">⬇ Export CSV</button></a>
+  <span class="spinner" id="spinner">⏳ Running pipeline…</span>
+</div>
+
+<div class="main">
+
+  <!-- AI Card Summary -->
+  {% if card_summary %}
+  <div class="card-summary full-width" style="grid-column:1/-1">
+    <strong>🤖 AI Daily Card Summary</strong>
+    {{ card_summary }}
+  </div>
+  {% endif %}
+
+  <!-- A/B/C/D Picks -->
+  <div class="card">
+    <div class="card-header">🎯 Today's A/B/C/D Picks</div>
+    <div class="card-body">
+      {% if has_data %}
+        {% for p in picks %}
+        <div class="pick">
+          <div class="pick-label {{ p.label }}">{{ p.label }}</div>
+          <div>
+            <div class="pick-name">{{ p.name }}</div>
+            {% if p.ai_verdict %}
+            <div>
+              <span class="ai-verdict {{ p.ai_verdict }}">🤖 {{ p.ai_verdict }}{% if p.ai_grade %} · {{ p.ai_grade }}{% endif %}</span>
+              {% if p.ai_one_liner %}<div class="ai-one-liner">{{ p.ai_one_liner }}</div>{% endif %}
+            </div>
+            {% endif %}
+            <div class="pick-stats">
+              <div class="stat">
+                <span class="stat-label">Model</span>
+                <span class="stat-value">{{ p.model_prob }}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Implied</span>
+                <span class="stat-value">{{ p.implied_prob }}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Edge</span>
+                <span class="stat-value {% if p.edge_raw > 0 %}edge-pos{% else %}edge-neg{% endif %}">{{ p.edge }}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Proj PA</span>
+                <span class="stat-value">{{ p.proj_pa }}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Stability</span>
+                <span class="stat-value">{{ p.stability }}</span>
+              </div>
+            </div>
+            <div class="reasons">
+              {% for r in p.reasons[:3] %}
+              <span class="tag">{{ r }}</span>
+              {% endfor %}
+            </div>
+            {% if p.ai_bull or p.ai_bear %}
+            <div class="ai-details">
+              {% if p.ai_bull %}<div class="ai-bull">✅ {{ p.ai_bull }}</div>{% endif %}
+              {% if p.ai_bear %}<div class="ai-bear">⚠️ {{ p.ai_bear }}</div>{% endif %}
+              {% if p.ai_sharp %}<div class="ai-sharp">💡 {{ p.ai_sharp }}</div>{% endif %}
+            </div>
+            {% endif %}
+          </div>
+          <div class="pick-right">
+            <div class="odds-big">{{ p.odds }}</div>
+            <div class="stake">{{ p.book }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="no-data">
+          <h2>No picks yet</h2>
+          <p>Click <strong>Run Full Day Now</strong> to pull data and generate today's card.</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Singles bets -->
+  <div class="card">
+    <div class="card-header">💵 Recommended Singles</div>
+    <div class="card-body">
+      {% if singles %}
+        <table>
+          <thead><tr><th>Leg</th><th>Player</th><th>Odds</th><th>Stake</th><th>EV</th><th>Payout</th></tr></thead>
+          <tbody>
+          {% for s in singles %}
+          <tr>
+            <td><strong>{{ s.label }}</strong></td>
+            <td>{{ s.players }}</td>
+            <td class="green">{{ s.odds }}</td>
+            <td>{{ s.stake }}</td>
+            <td class="{% if '+' in s.ev %}green{% else %}muted{% endif %}">{{ s.ev }}</td>
+            <td class="muted">{{ s.payout }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="no-data"><p>No singles recommended yet.</p></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Parlays -->
+  <div class="card">
+    <div class="card-header">🔗 Parlays</div>
+    <div class="card-body">
+      {% if parlay2 or parlay3 or parlay4 %}
+        {% for p in parlay2 %}
+        <div class="parlay-block">
+          <div class="parlay-label">2-Leg · {{ p.label }}</div>
+          <div class="parlay-players">{{ p.players }}</div>
+          <div class="parlay-meta">
+            <span>Odds: <strong class="green">{{ p.odds }}</strong></span>
+            <span>Stake: <strong>{{ p.stake }}</strong></span>
+            <span>EV: <strong>{{ p.ev }}</strong></span>
+            <span>Max payout: <strong>{{ p.payout }}</strong></span>
+          </div>
+        </div>
+        {% endfor %}
+        {% for p in parlay3 %}
+        <div class="parlay-block">
+          <div class="parlay-label">3-Leg · {{ p.label }}</div>
+          <div class="parlay-players">{{ p.players }}</div>
+          <div class="parlay-meta">
+            <span>Odds: <strong class="green">{{ p.odds }}</strong></span>
+            <span>Stake: <strong>{{ p.stake }}</strong></span>
+            <span>EV: <strong>{{ p.ev }}</strong></span>
+          </div>
+        </div>
+        {% endfor %}
+        {% for p in parlay4 %}
+        <div class="parlay-block" style="background:rgba(188,140,255,.05); border-color: var(--purple);">
+          <div class="parlay-label" style="color:var(--purple);">🎰 4-Leg Lottery · ABCD</div>
+          <div class="parlay-players">{{ p.players }}</div>
+          <div class="parlay-meta">
+            <span>Odds: <strong style="color:var(--purple)">{{ p.odds }}</strong></span>
+            <span>Stake: <strong>{{ p.stake }}</strong></span>
+            <span>Max payout: <strong>{{ p.payout }}</strong></span>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="no-data"><p>No parlays generated yet.</p></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Historical ROI -->
+  <div class="card">
+    <div class="card-header">📊 Historical ROI</div>
+    <div class="card-body">
+      {% if roi %}
+        <table>
+          <thead><tr><th>Type</th><th>Bets</th><th>Wins</th><th>Hit%</th><th>Profit</th><th>ROI</th></tr></thead>
+          <tbody>
+          {% for r in roi %}
+          <tr>
+            <td>{{ r.type }}</td>
+            <td>{{ r.bets }}</td>
+            <td>{{ r.wins }}</td>
+            <td>{{ r.hit_rate }}</td>
+            <td class="{% if '+' in r.profit %}green{% else %}red{% endif %}">{{ r.profit }}</td>
+            <td class="{% if '+' in r.roi or r.roi.startswith('0') %}roi-good{% else %}roi-bad{% endif %}">{{ r.roi }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="no-data"><p>No completed bets recorded yet.<br/>Use <code>POST /api/result</code> to log outcomes.</p></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Top 20 candidates table -->
+  <div class="card full-width">
+    <div class="card-header">🏆 Top 20 HR Candidates Today</div>
+    <div class="card-body">
+      {% if top20 %}
+        <table>
+          <thead><tr><th>#</th><th>Label</th><th>Player</th><th>Model Prob</th><th>Implied</th><th>Edge</th><th>Score</th><th>Best Odds</th><th>Book</th></tr></thead>
+          <tbody>
+          {% for p in top20 %}
+          <tr>
+            <td class="muted">{{ p.rank }}</td>
+            <td><strong>{{ p.label }}</strong></td>
+            <td>{{ p.name }}</td>
+            <td>{{ p.model_prob }}</td>
+            <td>{{ p.implied_prob }}</td>
+            <td class="{{ p.edge_color }}">{{ p.edge }}</td>
+            <td class="muted">{{ p.score }}</td>
+            <td class="green">{{ p.odds }}</td>
+            <td class="muted">{{ p.book }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="no-data"><p>Run the pipeline to see today's candidates.</p></div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<div id="toast">✅ Pipeline started — refresh in ~60 seconds.</div>
+
+<script>
+  async function runPipeline(stage) {
+    document.getElementById('spinner').classList.add('show');
+    try {
+      const resp = await fetch(`/api/run/${stage}`, {method:'POST'});
+      const data = await resp.json();
+      showToast();
+    } catch(e) {
+      alert('Pipeline trigger failed: ' + e.message);
+    } finally {
+      document.getElementById('spinner').classList.remove('show');
+    }
+    setTimeout(() => location.reload(), 90000);
+  }
+
+  function showToast() {
+    const t = document.getElementById('toast');
+    t.style.display = 'block';
+    setTimeout(() => t.style.display = 'none', 5000);
+  }
+
+  // Auto-refresh every 5 minutes if pipeline is running
+  const params = new URLSearchParams(window.location.search);
+</script>
+</body>
+</html>
