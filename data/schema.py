@@ -272,7 +272,8 @@ CREATE TABLE IF NOT EXISTS model_predictions (
     reason_codes    TEXT,
     projected_pa    DOUBLE PRECISION,
     batting_order   INTEGER,
-    confirmed_lineup INTEGER DEFAULT 0
+    confirmed_lineup INTEGER DEFAULT 0,
+    ai_analysis     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bet_recommendations (
