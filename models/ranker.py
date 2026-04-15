@@ -19,6 +19,7 @@ from config import (
 from data.schema import get_connection, execute, fetchone, fetchall
 from pipeline.features import build_all_feature_vectors
 from models.train import predict_proba
+from models.openrouter import analyze_full_card
 
 log = logging.getLogger(__name__)
 
@@ -281,4 +282,36 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
 
     conn.close()
     log.info(f"Ranked {len(playable)} playable hitters. Top 4 labeled.")
+
+    # AI enrichment — only on final run stage to save API calls
+    if run_stage == "final" and named:
+        try:
+            log.info("Running AI analysis on top picks...")
+            named, card_summary = analyze_full_card(named, game_date.strftime("%Y-%m-%d"))
+            # Store summary on first pick
+            if named and card_summary:
+                named[0]["card_summary"] = card_summary
+            # Save AI data back to DB
+            conn2 = get_connection()
+            for rec in named:
+                ai_blob = json.dumps({
+                    "ai_verdict":        rec.get("ai_verdict", ""),
+                    "ai_grade":          rec.get("ai_grade", ""),
+                    "ai_one_liner":      rec.get("ai_one_liner", ""),
+                    "ai_bull":           rec.get("ai_bull", ""),
+                    "ai_bear":           rec.get("ai_bear", ""),
+                    "ai_sharp":          rec.get("ai_sharp", ""),
+                    "ai_confidence_adj": rec.get("ai_confidence_adj", 0.0),
+                    "card_summary":      rec.get("card_summary", ""),
+                })
+                execute(conn2, """
+                    UPDATE model_predictions
+                    SET ai_analysis = ?
+                    WHERE player_id = ? AND run_timestamp = ? AND run_stage = ?
+                """, (ai_blob, rec["player_id"], now, run_stage))
+            conn2.commit()
+            conn2.close()
+        except Exception as e:
+            log.warning(f"AI analysis failed (non-fatal): {e}")
+
     return named
