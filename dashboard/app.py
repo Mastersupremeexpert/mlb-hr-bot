@@ -87,10 +87,17 @@ def _get_today_card(game_date: str | None = None) -> dict:
         """, (game_date,))
 
     picks_out = []
+    card_summary = ""
     for p in picks_rows:
         reasons = []
         try: reasons = json.loads(p.get("reason_codes") or "[]")
         except: pass
+        ai_data = {}
+        try: ai_data = json.loads(p.get("ai_analysis") or "{}")
+        except: pass
+        # Pull card summary from first pick
+        if not card_summary and ai_data.get("card_summary"):
+            card_summary = ai_data["card_summary"]
         picks_out.append({
             "label": p["rank_label"],
             "name": p["full_name"],
@@ -105,6 +112,13 @@ def _get_today_card(game_date: str | None = None) -> dict:
             "proj_pa": f"{(p.get('projected_pa') or 0):.1f}",
             "reasons": reasons,
             "confirmed": p.get("confirmed_lineup"),
+            # AI fields
+            "ai_verdict": ai_data.get("ai_verdict", ""),
+            "ai_grade": ai_data.get("ai_grade", ""),
+            "ai_one_liner": ai_data.get("ai_one_liner", ""),
+            "ai_bull": ai_data.get("ai_bull", ""),
+            "ai_bear": ai_data.get("ai_bear", ""),
+            "ai_sharp": ai_data.get("ai_sharp", ""),
         })
 
     # Bet recommendations
@@ -192,6 +206,7 @@ def _get_today_card(game_date: str | None = None) -> dict:
         "parlay3": parlay3, "parlay4": parlay4,
         "roi": roi_out, "top20": top20_out,
         "has_data": len(picks_out) > 0,
+        "card_summary": card_summary,
     }
 
 
