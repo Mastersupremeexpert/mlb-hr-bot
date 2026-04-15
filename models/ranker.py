@@ -16,7 +16,7 @@ from config import (
     SCORE_WEIGHT_EDGE, SCORE_WEIGHT_TRUE_PROB,
     SCORE_WEIGHT_STABILITY, SCORE_WEIGHT_CORR_RISK,
 )
-from data.schema import get_connection
+from data.schema import get_connection, execute, fetchone, fetchall
 from pipeline.features import build_all_feature_vectors
 from models.train import predict_proba
 
@@ -168,7 +168,6 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
         return []
 
     conn = get_connection()
-    cur = conn.cursor()
     now = _now_utc()
 
     results = []
@@ -179,13 +178,13 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
         # Get probability
         _, cal_prob = predict_proba(feats)
 
-        # Get best odds
-        odds_row = cur.execute("""
-            SELECT MIN(american_odds) as best_odds, bookmaker, implied_prob
+        # Get best odds (highest american_odds = best payout for HR dogs)
+        odds_row = fetchone(conn, """
+            SELECT american_odds as best_odds, bookmaker, implied_prob
             FROM sportsbook_odds
             WHERE player_id=? AND (game_pk=? OR game_pk IS NULL)
-            ORDER BY american_odds ASC LIMIT 1
-        """, (pid, gpk)).fetchone()
+            ORDER BY american_odds DESC LIMIT 1
+        """, (pid, gpk))
 
         if odds_row and odds_row["best_odds"]:
             best_odds = odds_row["best_odds"]
@@ -256,7 +255,7 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
     # Save to DB
     all_ranked = labeled + [r for r in playable[4:]] + [r for r in results if r not in playable]
     for rec in all_ranked:
-        cur.execute("""
+        execute(conn, """
             INSERT INTO model_predictions(
                 game_pk,player_id,run_timestamp,run_stage,model_prob,calibrated_prob,
                 best_implied_prob,best_odds,best_bookmaker,edge,stability_score,
@@ -276,7 +275,7 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
     # Fetch player names for output
     named = []
     for rec in labeled:
-        row = cur.execute("SELECT full_name FROM players WHERE player_id=?", (rec["player_id"],)).fetchone()
+        row = fetchone(conn, "SELECT full_name FROM players WHERE player_id=?", (rec["player_id"],))
         rec["player_name"] = row["full_name"] if row else f"Player {rec['player_id']}"
         named.append(rec)
 
