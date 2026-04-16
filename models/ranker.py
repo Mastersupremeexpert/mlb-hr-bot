@@ -131,7 +131,12 @@ def generate_reason_codes(feats: dict, cal_prob: float, implied_prob: float) -> 
         reasons.append(f"Positive price edge ({edge:.1%})")
 
     if not reasons:
-        reasons.append("Marginally positive expected value")
+        if implied_prob == 0.15:  # fallback — no real odds yet
+            reasons.append("Best model score today (odds not yet available)")
+        elif edge >= 0:
+            reasons.append("Marginally positive expected value")
+        else:
+            reasons.append("Top ranked by model score")
 
     return reasons
 
@@ -235,6 +240,14 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
         }
         results.append(rec)
 
+    # Deduplicate — keep best score per player_id
+    seen_players = {}
+    for r in results:
+        pid = r["player_id"]
+        if pid not in seen_players or r["score"] > seen_players[pid]["score"]:
+            seen_players[pid] = r
+    results = list(seen_players.values())
+
     # Filter: must be confirmed lineup, meet PA minimum, have positive edge if odds available
     playable = [
         r for r in results
@@ -246,12 +259,17 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
     # Sort by score desc
     playable.sort(key=lambda x: x["score"], reverse=True)
 
-    # Label A/B/C/D
+    # Label A/B/C/D — one unique player per slot
     labels = ["A", "B", "C", "D"]
     labeled = []
-    for i, rec in enumerate(playable[:4]):
-        rec["rank_label"] = labels[i]
-        labeled.append(rec)
+    seen_labeled = set()
+    for rec in playable:
+        if len(labeled) >= 4:
+            break
+        if rec["player_id"] not in seen_labeled:
+            rec["rank_label"] = labels[len(labeled)]
+            labeled.append(rec)
+            seen_labeled.add(rec["player_id"])
 
     # Save to DB
     all_ranked = labeled + [r for r in playable[4:]] + [r for r in results if r not in playable]

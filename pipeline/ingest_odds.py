@@ -205,7 +205,15 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
                     player_name = outcome.get("description") or outcome.get("name", "")
                     odds_val = outcome.get("price")
                     side = (outcome.get("name") or "").lower()
+                    point = outcome.get("point")
                     if not player_name or odds_val is None:
+                        continue
+                    # Only use 0.5 line (to HR or not) — most liquid standard bet
+                    # Fall back to 1.5 if no 0.5 available
+                    if point is not None and point not in (0.5, 1.5):
+                        continue
+                    # Prefer 0.5 line — skip 1.5 if we already have 0.5 for this player
+                    if point == 1.5 and player_name in yes_odds_map:
                         continue
                     if "over" in side or side == player_name.lower():
                         yes_odds_map[player_name] = int(odds_val)

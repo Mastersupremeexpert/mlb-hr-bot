@@ -26,7 +26,7 @@ ODDS_API_BASE  = "https://api.the-odds-api.com/v4"
 ODDS_SPORT     = "baseball_mlb"
 ODDS_MARKETS   = "batter_home_runs"
 ODDS_REGIONS   = "us"
-ODDS_BOOKMAKERS = ["fanduel", "draftkings", "betmgm", "caesars", "pointsbet"]
+ODDS_BOOKMAKERS = ["fanduel", "draftkings", "betmgm", "caesars", "pointsbet", "betrivers", "bet365", "williamhill_us", "barstool", "unibet_us"]
 
 # ── MLB Stats API (free, no key) ───────────────────────────────────────────
 MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
