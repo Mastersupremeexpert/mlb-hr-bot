@@ -13,8 +13,8 @@ from itertools import combinations
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from config import STAKE_MAP, MAX_SAME_GAME_LEGS
-from data.schema import get_connection
+from config import STAKE_MAP, MAX_SAME_GAME_LEGS, DAILY_BUDGET
+from data.schema import get_connection, execute
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +82,29 @@ def _same_game_count(legs: list[dict]) -> int:
     return len(games) - len(set(games))
 
 
+def kelly_stake(cal_prob: float, american_odds: int,
+                kelly_frac: float = 0.25, max_stake: float = 50.0,
+                min_stake: float = 5.0) -> float:
+    """
+    Fractional Kelly criterion stake sizing.
+    kelly_frac=0.25 = quarter Kelly (conservative, reduces variance).
+    Formula: f* = (b*p - q) / b  where b = decimal_odds - 1, p = win_prob, q = 1 - p
+    """
+    dec = american_to_decimal(american_odds)
+    b = dec - 1.0
+    if b <= 0:
+        return min_stake
+    p = cal_prob
+    q = 1.0 - p
+    full_kelly = (b * p - q) / b
+    if full_kelly <= 0:
+        return 0.0  # negative Kelly = no bet
+    frac_kelly = full_kelly * kelly_frac
+    # Convert fraction to dollar amount (% of DAILY_BUDGET)
+    stake = frac_kelly * DAILY_BUDGET
+    return round(max(min_stake, min(max_stake, stake)), 2)
+
+
 def build_parlays(candidates: list[dict]) -> dict:
     """
     Given A/B/C/D candidates, build ranked 2-leg, 3-leg, and 4-leg parlays.
@@ -104,9 +127,14 @@ def build_parlays(candidates: list[dict]) -> dict:
             odds = c.get("best_odds")
             if odds:
                 dec = american_to_decimal(odds)
-                stake = STAKE_MAP.get(label, 10.0)
+                # Kelly sizing replaces hardcoded STAKE_MAP for singles
+                stake = kelly_stake(c["cal_prob"], odds)
+                if stake == 0.0:
+                    continue  # negative Kelly = skip
                 exp_payout = stake * dec
                 ev = (c["cal_prob"] * exp_payout) - stake
+                if ev <= 0:
+                    continue  # only recommend positive EV singles
                 singles.append({
                     "label": label,
                     "player_id": c["player_id"],
@@ -187,7 +215,7 @@ def build_parlays(candidates: list[dict]) -> dict:
     parlay_3_candidates.sort(key=lambda x: x["combo_score"], reverse=True)
     parlay_3 = [p for p in parlay_3_candidates[:2] if p["expected_value"] > 0]
 
-    # 4-leg parlay (only if all 4 available)
+    # 4-leg parlay — only include if EV > 0 (no lottery exception)
     parlay_4 = []
     if len(all_candidates_list) == 4:
         legs = all_candidates_list
@@ -200,18 +228,21 @@ def build_parlays(candidates: list[dict]) -> dict:
             for l in legs:
                 combined_prob *= l["cal_prob"]
             ev = (combined_prob * stake * dec) - stake
-            # 4-leg is always treated as lottery — include regardless of EV
-            parlay_4 = [{
-                "legs": [l["player_id"] for l in legs],
-                "leg_labels": "ABCD",
-                "leg_names": [l.get("player_name","") for l in legs],
-                "combo_score": cs,
-                "combined_prob": round(combined_prob, 4),
-                "american_odds": odds,
-                "stake": stake,
-                "expected_payout": round(stake * dec, 2),
-                "expected_value": round(ev, 2),
-            }]
+            # EV gate applies to 4-leg too — no free lottery passes
+            if ev > 0:
+                parlay_4 = [{
+                    "legs": [l["player_id"] for l in legs],
+                    "leg_labels": "ABCD",
+                    "leg_names": [l.get("player_name","") for l in legs],
+                    "combo_score": cs,
+                    "combined_prob": round(combined_prob, 4),
+                    "american_odds": odds,
+                    "stake": stake,
+                    "expected_payout": round(stake * dec, 2),
+                    "expected_value": round(ev, 2),
+                }]
+            else:
+                log.info(f"4-leg ABCD parlay EV={ev:.2f} < 0 — excluded.")
 
     return {
         "singles": singles,
