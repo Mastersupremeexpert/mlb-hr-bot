@@ -191,7 +191,7 @@ def _upsert_pitcher_advanced(conn, rows: list[dict]):
         if not r.get("player_id"):
             continue
         execute(conn,
-            "INSERT OR IGNORE INTO players(player_id, full_name) VALUES(?,?)",
+            "INSERT OR IGNORE INTO players(player_id, full_name) VALUES(?,?) ON CONFLICT DO NOTHING",
             (r["player_id"], r["full_name"]))
         # Update pitcher_statcast with the new fields
         execute(conn, """

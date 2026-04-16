@@ -215,7 +215,7 @@ def _upsert_batter_statcast(conn, rows: list[dict]):
         if not r.get("player_id"):
             continue
         execute(conn, """
-            INSERT OR IGNORE INTO players(player_id, full_name) VALUES(?,?)
+            INSERT OR IGNORE INTO players(player_id, full_name) VALUES(?,?) ON CONFLICT DO NOTHING
         """, (r["player_id"], ""))
         execute(conn, """
             INSERT INTO batter_statcast(
@@ -274,7 +274,7 @@ def run_ingest_batter_statcast():
         # Update player name from any source
         name = _player_name(row)
         execute(conn,
-            "INSERT OR IGNORE INTO players(player_id,full_name) VALUES(?,?)", (pid, name))
+            "INSERT OR IGNORE INTO players(player_id,full_name) VALUES(?,?) ON CONFLICT DO NOTHING", (pid, name))
         if name:
             execute(conn,
                 "UPDATE players SET full_name=? WHERE player_id=?", (name, pid))
@@ -336,7 +336,7 @@ def run_ingest_pitcher_statcast():
             continue
         name = _player_name(row)
         execute(conn,
-            "INSERT OR IGNORE INTO players(player_id,full_name) VALUES(?,?)", (pid, name))
+            "INSERT OR IGNORE INTO players(player_id,full_name) VALUES(?,?) ON CONFLICT DO NOTHING", (pid, name))
 
         ev = ev_map.get(pid)
         g  = lambda *cols, **kw: _g(row, *cols, **kw)

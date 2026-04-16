@@ -59,9 +59,16 @@ def execute(conn, sql: str, params=None):
         sql = sql.replace("?", "%s")
         # Postgres uses SERIAL / RETURNING instead of lastrowid
         sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-        sql = sql.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+        # Convert SQLite INSERT OR IGNORE → Postgres INSERT ... ON CONFLICT DO NOTHING
+        import re
+        sql = re.sub(
+            r'INSERT\s+OR\s+IGNORE\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)(?!\s*ON CONFLICT)',
+            r'INSERT INTO \1 (\2) VALUES (\3) ON CONFLICT DO NOTHING',
+            sql, flags=re.IGNORECASE
+        )
+        # Also handle any remaining INSERT OR IGNORE without ON CONFLICT (belt+suspenders)
+        sql = re.sub(r'INSERT\s+OR\s+IGNORE\s+INTO', 'INSERT INTO', sql, flags=re.IGNORECASE)
         sql = sql.replace("INSERT OR REPLACE INTO", "INSERT INTO")
-        sql = sql.replace("ON CONFLICT DO NOTHING", "ON CONFLICT DO NOTHING")
     cur = conn.cursor()
     if params:
         cur.execute(sql, params)
