@@ -106,6 +106,56 @@ def export_card(card: dict, game_date: date):
     return json_path, csv_path
 
 
+def _remap_fake_player_ids(conn):
+    """
+    Cleanup pass: find sportsbook_odds rows attached to fake hash IDs
+    (player_id >= 10,000,000) and remap them to the real MLBAM ID by
+    matching on full_name. Deletes any rows that can't be remapped.
+    Run this right before ranking so picks always get real odds.
+    """
+    from data.schema import fetchall, execute as db_execute
+    try:
+        fake_rows = fetchall(conn, """
+            SELECT DISTINCT so.player_id, p.full_name
+            FROM sportsbook_odds so
+            JOIN players p ON p.player_id = so.player_id
+            WHERE so.player_id >= 10000000
+        """, ())
+
+        remapped = 0
+        deleted = 0
+        for row in fake_rows:
+            fake_id  = row["player_id"]
+            name     = row["full_name"]
+            # Find the real MLBAM player with the same name
+            real_row = fetchall(conn, """
+                SELECT player_id FROM players
+                WHERE full_name = ? AND player_id < 10000000
+                ORDER BY player_id ASC LIMIT 1
+            """, (name,))
+            if real_row:
+                real_id = real_row[0]["player_id"]
+                db_execute(conn, """
+                    UPDATE sportsbook_odds SET player_id = ?
+                    WHERE player_id = ?
+                """, (real_id, fake_id))
+                remapped += 1
+                log.info(f"  Remapped odds: '{name}' {fake_id} -> {real_id}")
+            else:
+                # No real player found — drop these orphan odds rows
+                db_execute(conn, "DELETE FROM sportsbook_odds WHERE player_id = ?", (fake_id,))
+                deleted += 1
+                log.debug(f"  Deleted unresolvable odds for '{name}' (fake id {fake_id})")
+
+        if remapped or deleted:
+            conn.commit()
+            log.info(f"ID cleanup: {remapped} remapped, {deleted} deleted.")
+        else:
+            log.info("ID cleanup: no fake IDs found.")
+    except Exception as e:
+        log.warning(f"ID cleanup failed (non-fatal): {e}")
+
+
 def run_morning(game_date: date | None = None):
     """Morning run: schedule, Statcast, early odds, weather."""
     _setup_logging()
@@ -140,6 +190,11 @@ def run_morning(game_date: date | None = None):
     log.info("Ingesting early odds...")
     fetch_and_store_odds(snapshot_type="morning", game_date=game_date)
 
+    log.info("Remapping any fake player IDs to real MLBAM IDs...")
+    _conn = get_connection()
+    _remap_fake_player_ids(_conn)
+    _conn.close()
+
     log.info("Running preliminary ranking...")
     ranked = run_ranking(game_date, run_stage="morning")
     card = build_parlays(ranked)
@@ -164,6 +219,11 @@ def run_post_lineup(game_date: date | None = None):
 
     log.info("Refreshing odds...")
     fetch_and_store_odds(snapshot_type="pre_lineup", game_date=game_date)
+
+    log.info("Remapping any fake player IDs to real MLBAM IDs...")
+    _conn = get_connection()
+    _remap_fake_player_ids(_conn)
+    _conn.close()
 
     log.info("Running final ranking...")
     ranked = run_ranking(game_date, run_stage="final")

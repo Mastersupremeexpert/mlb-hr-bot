@@ -274,19 +274,24 @@ async def api_run_settle(background_tasks: BackgroundTasks,
     return {"status": "auto-settlement started"}
 
 
+@app.post("/api/result")
+async def post_result(rec_id: int, won: bool, payout: float = 0.0,
+                      user: str = Depends(require_auth)):
+    from pipeline.workflow import record_result
+    record_result(rec_id, won, payout)
+    return {"status": "recorded"}
+
+
 @app.post("/api/admin/migrate_ids")
 async def api_admin_migrate_ids(user: str = Depends(require_auth)):
     """
     One-time migration: repoint orphan hash-ID rows to real MLBAM IDs.
-    Safe to run multiple times — only acts on hash IDs with a real match.
-    Run this ONCE after deploying the v6 update, then you can forget about it.
+    Safe to run multiple times. Hit this once after deploying v6+.
     """
     from pipeline.migrate_fix_orphan_ids import (
         find_hash_to_real_mapping, repoint_table,
         repoint_bet_recommendations, delete_orphan_hash_players,
     )
-    from data.schema import get_connection
-
     conn = get_connection()
     mapping = find_hash_to_real_mapping(conn)
     if not mapping:
@@ -311,14 +316,6 @@ async def api_admin_migrate_ids(user: str = Depends(require_auth)):
         "recommendations_updated": updated_recs,
         "hash_players_deleted": deleted,
     }
-
-
-@app.post("/api/result")
-async def post_result(rec_id: int, won: bool, payout: float = 0.0,
-                      user: str = Depends(require_auth)):
-    from pipeline.workflow import record_result
-    record_result(rec_id, won, payout)
-    return {"status": "recorded"}
 
 
 @app.get("/health")

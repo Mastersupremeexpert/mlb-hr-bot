@@ -20,10 +20,7 @@ log = logging.getLogger(__name__)
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE    = "https://openrouter.ai/api/v1/chat/completions"
-# Model slug — overridable via env var without code change.
-# Default: Opus 4.7 (released 2026-04-16). Update via OPENROUTER_MODEL env var
-# if you switch to a cheaper/faster model (e.g. anthropic/claude-sonnet-4.5).
-MODEL              = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-opus-4.7")
+MODEL              = "anthropic/claude-sonnet-4.6"
 
 # Cost guard — max tokens per pick analysis
 MAX_TOKENS = 600
@@ -61,14 +58,11 @@ def _call_llm(prompt: str) -> Optional[str]:
             },
             timeout=30,
         )
-        if resp.status_code != 200:
-            # Log the actual error from OpenRouter so model/auth issues are visible
-            log.error(f"OpenRouter returned {resp.status_code} using model '{MODEL}': {resp.text[:500]}")
-            return None
+        resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        log.warning(f"OpenRouter call failed (model={MODEL}): {e}")
+        log.warning(f"OpenRouter call failed: {e}")
         return None
 
 

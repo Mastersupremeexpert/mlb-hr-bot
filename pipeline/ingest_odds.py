@@ -70,86 +70,39 @@ def _normalize_name(name: str) -> str:
     return " ".join(ascii_name.lower().split())
 
 
-def _mlb_stats_search(name: str) -> Optional[int]:
-    """
-    Resolve a player name to a real MLBAM ID via the MLB Stats API search endpoint.
-    This is the authoritative source — MLBAM IDs are < 1,000,000 (our hash fallbacks
-    are >= 1,000,000, so we can always tell them apart).
-    """
-    from config import MLB_STATS_BASE
-    try:
-        resp = requests.get(
-            f"{MLB_STATS_BASE}/people/search",
-            params={"names": name, "sportId": 1},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        people = data.get("people", [])
-        if not people:
-            return None
-
-        # Prefer active MLB player with exact case-insensitive match
-        norm_input = _normalize_name(name)
-        for p in people:
-            if _normalize_name(p.get("fullName", "")) == norm_input:
-                pid = p.get("id")
-                if pid and int(pid) < 1_000_000:  # real MLBAM IDs
-                    return int(pid)
-
-        # Otherwise take the first MLBAM result
-        for p in people:
-            pid = p.get("id")
-            if pid and int(pid) < 1_000_000:
-                return int(pid)
-    except Exception as e:
-        log.debug(f"MLB Stats search failed for '{name}': {e}")
-    return None
-
-
 def _find_player_id(conn, name: str) -> Optional[int]:
     """
-    Match a player name from the Odds API to a REAL MLBAM player_id.
-    We deliberately ignore hash fallback IDs (>= 1,000,000) during lookup so
-    that we always prefer a real MLBAM ID when one exists.
-
-    Order:
-      1. Exact match against real MLBAM ID (player_id < 1,000,000)
-      2. Accent-normalized exact match (real IDs only)
-      3. Last name + first initial (real IDs only)
-      4. Last name unique (real IDs only)
-      5. MLB Stats API live search — authoritative fallback
+    Match a player name from the Odds API to a real MLBAM player_id in the DB.
+    Tries in order:
+      1. Exact match in players table (real MLBAM IDs < 1,000,000 preferred)
+      2. Accent-normalized exact match
+      3. Last name + first initial match
+      4. Last name only (if unique)
+      5. MLB Stats API /people/search fallback — resolves name to real MLBAM ID
+         and inserts into players table so future lookups are instant.
+    Never creates fake hash IDs — if no match found, returns None.
     """
-    # 1. Exact match against real MLBAM IDs only
-    row = fetchone(
-        conn,
-        "SELECT player_id FROM players WHERE full_name=? AND player_id < 1000000",
-        (name,),
-    )
-    if row:
+    # Always prefer real MLBAM IDs (< 10,000,000) over any old fake hash IDs
+    row = fetchone(conn,
+        "SELECT player_id, full_name FROM players WHERE full_name=? ORDER BY player_id ASC LIMIT 1",
+        (name,))
+    if row and row["player_id"] < 10_000_000:
         return row["player_id"]
 
     norm_input = _normalize_name(name)
-    # Pull only real MLBAM IDs for local fuzzy matching
-    real_players = fetchall(
-        conn,
-        "SELECT player_id, full_name FROM players WHERE player_id < 1000000",
-        (),
-    )
+    # Only search real players (MLBAM IDs are 6 digits, well under 1M)
+    all_players = fetchall(conn, "SELECT player_id, full_name FROM players WHERE player_id < 10000000", ())
 
-    # 2. Accent-normalized match
-    for p in real_players:
+    for p in all_players:
         if _normalize_name(p["full_name"]) == norm_input:
             return p["player_id"]
 
-    # 3. Last name + first initial match
     parts = name.split()
     if len(parts) >= 2:
         last = _normalize_name(parts[-1])
         first_initial = _normalize_name(parts[0])[0] if parts[0] else ""
         matches = []
-        for p in real_players:
+        for p in all_players:
             p_parts = p["full_name"].split()
             if len(p_parts) >= 2:
                 p_last = _normalize_name(p_parts[-1])
@@ -159,29 +112,45 @@ def _find_player_id(conn, name: str) -> Optional[int]:
         if len(matches) == 1:
             return matches[0]
 
-        # 4. Last name only (if unique)
         last_matches = [
-            p["player_id"] for p in real_players
+            p["player_id"] for p in all_players
             if _normalize_name(p["full_name"].split()[-1]) == last
         ]
         if len(last_matches) == 1:
             return last_matches[0]
 
-    # 5. MLB Stats API live search — insert into players table if new
-    mlbam_id = _mlb_stats_search(name)
-    if mlbam_id:
-        try:
-            execute(conn, """
-                INSERT INTO players(player_id, full_name)
-                VALUES(?, ?)
-                ON CONFLICT DO NOTHING
-            """, (mlbam_id, name))
-            conn.commit()
-            log.info(f"  Resolved '{name}' → MLBAM {mlbam_id} via Stats API")
-        except Exception as e:
-            log.debug(f"Insert after MLB Stats lookup failed: {e}")
-        return mlbam_id
+    # Fallback: query MLB Stats API people search to get real MLBAM ID
+    try:
+        resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/people/search",
+            params={"names": name, "sportIds": 1},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            people = resp.json().get("people", [])
+            if people:
+                # Pick best match by normalized name
+                for person in people:
+                    api_name = person.get("fullName", "")
+                    if _normalize_name(api_name) == norm_input:
+                        pid = person["id"]
+                        # Insert into players table so future lookups are instant
+                        try:
+                            execute(conn, """
+                                INSERT INTO players(player_id, full_name)
+                                VALUES(?, ?)
+                                ON CONFLICT DO NOTHING
+                            """, (pid, api_name))
+                            conn.commit()
+                        except Exception:
+                            pass
+                        log.debug(f"  MLB API resolved '{name}' -> {pid} ({api_name})")
+                        return pid
+    except Exception as e:
+        log.debug(f"  MLB API lookup failed for '{name}': {e}")
 
+    # No match found anywhere — return None, do NOT create a fake ID
+    log.debug(f"  Could not resolve player '{name}' to any MLBAM ID — skipping odds row")
     return None
 
 
@@ -307,26 +276,11 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
 
                     player_id = _find_player_id(conn, player_name)
                     if not player_id:
-                        # Last-resort: MLB Stats API also couldn't find this player.
-                        # This should be very rare — usually means a typo from the
-                        # sportsbook or a non-MLB player name in the feed.
-                        fake_id = abs(hash(player_name)) % 9000000 + 1000000
-                        log.warning(
-                            f"  Could not resolve '{player_name}' to MLBAM ID — "
-                            f"using hash fallback {fake_id}"
-                        )
-                        try:
-                            execute(conn, """
-                                INSERT INTO players(player_id, full_name)
-                                VALUES(?, ?)
-                                ON CONFLICT DO NOTHING
-                            """, (fake_id, player_name))
-                            conn.commit()
-                        except Exception:
-                            pass
-                        player_id = fake_id
-                    else:
-                        total_matched += 1
+                        # Cannot resolve to a real MLBAM ID — skip this odds row.
+                        # Fake hash IDs cause mismatches with lineup player_ids.
+                        log.debug(f"  Skipping odds for unresolved player: {player_name}")
+                        continue
+                    total_matched += 1
 
                     try:
                         execute(conn, """
