@@ -390,8 +390,59 @@ CREATE INDEX IF NOT EXISTS idx_pitcher_statcast_player ON pitcher_statcast(playe
 """
 
 
+# Migrations: columns added after initial schema deploy.
+# Each entry: (table, column, type) — safe to run repeatedly (IF NOT EXISTS)
+_MIGRATIONS = [
+    ("model_predictions", "pre_ai_prob",         "DOUBLE PRECISION"),
+    ("model_predictions", "ai_confidence",        "DOUBLE PRECISION"),
+    ("model_predictions", "ai_reasoning",         "TEXT"),
+    ("bet_recommendations", "thin_edge",          "BOOLEAN DEFAULT FALSE"),
+    ("pitcher_advanced",  "hr9",                  "DOUBLE PRECISION"),
+    ("pitcher_advanced",  "xfip",                 "DOUBLE PRECISION"),
+    ("pitcher_advanced",  "k9",                   "DOUBLE PRECISION"),
+    ("pitcher_advanced",  "bb9",                  "DOUBLE PRECISION"),
+    ("pitcher_advanced",  "era",                  "DOUBLE PRECISION"),
+    ("pitcher_advanced",  "whip",                 "DOUBLE PRECISION"),
+    ("pitcher_advanced",  "hr_per_bf",            "DOUBLE PRECISION"),
+    ("pitcher_advanced",  "ip",                   "DOUBLE PRECISION"),
+    ("batter_advanced",   "hr_per_pa",            "DOUBLE PRECISION"),
+    ("batter_advanced",   "hr_per_game",          "DOUBLE PRECISION"),
+    ("batter_advanced",   "z_score_due",          "DOUBLE PRECISION"),
+    ("batter_advanced",   "hr",                   "INTEGER"),
+    ("batter_advanced",   "pa",                   "INTEGER"),
+    ("batter_advanced",   "games_played",         "INTEGER"),
+    ("batter_advanced",   "iso",                  "DOUBLE PRECISION"),
+    ("batter_advanced",   "k_rate",               "DOUBLE PRECISION"),
+]
+
+
+def _run_migrations(conn):
+    """Add any missing columns to existing tables — safe to run on every startup."""
+    cur = conn.cursor()
+    for table, column, col_type in _MIGRATIONS:
+        try:
+            if _is_postgres():
+                cur.execute(f"""
+                    ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}
+                """)
+            else:
+                # SQLite doesn't support IF NOT EXISTS on ALTER TABLE
+                try:
+                    cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
+                except Exception:
+                    pass  # Column already exists
+        except Exception as e:
+            log.debug(f"Migration {table}.{column}: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    conn.commit()
+    log.info("Migrations applied.")
+
+
 def init_db():
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, then run migrations."""
     conn = get_connection()
     try:
         if _is_postgres():
@@ -411,6 +462,8 @@ def init_db():
                                .replace("DOUBLE PRECISION", "REAL")
                                .replace("BIGINT", "INTEGER"))
             conn.commit()
+        # Run column migrations on every startup
+        _run_migrations(conn)
         log.info("Database initialized.")
     finally:
         conn.close()
