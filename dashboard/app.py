@@ -119,6 +119,8 @@ def _get_today_card(game_date: str | None = None) -> dict:
             "ai_bull": ai_data.get("ai_bull", ""),
             "ai_bear": ai_data.get("ai_bear", ""),
             "ai_sharp": ai_data.get("ai_sharp", ""),
+            # Thin-edge flag: edge < 2% or negative
+            "thin_edge": (p.get("edge") or 0) < 0.02,
         })
 
     # Bet recommendations
@@ -252,6 +254,24 @@ async def api_run_full(background_tasks: BackgroundTasks,
     from pipeline.workflow import run_full_day
     background_tasks.add_task(run_full_day)
     return {"status": "full run started"}
+
+
+@app.post("/api/run/closing")
+async def api_run_closing(background_tasks: BackgroundTasks,
+                          user: str = Depends(require_auth)):
+    """Capture closing lines — run ~10 min before first pitch."""
+    from pipeline.workflow import run_pre_game_snapshot
+    background_tasks.add_task(run_pre_game_snapshot)
+    return {"status": "closing line capture started"}
+
+
+@app.post("/api/run/settle")
+async def api_run_settle(background_tasks: BackgroundTasks,
+                         user: str = Depends(require_auth)):
+    """Auto-settle yesterday's results — run after games finish."""
+    from pipeline.workflow import run_post_game_settle
+    background_tasks.add_task(run_post_game_settle)
+    return {"status": "auto-settlement started"}
 
 
 @app.post("/api/result")

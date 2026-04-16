@@ -130,6 +130,10 @@ def run_morning(game_date: date | None = None):
     log.info("Ingesting Statcast pitchers...")
     run_ingest_pitcher_statcast()
 
+    log.info("Ingesting advanced pitcher/batter stats (HR/9, xFIP, Z-score)...")
+    from pipeline.ingest_fangraphs import run_ingest_advanced
+    run_ingest_advanced()
+
     log.info("Ingesting weather...")
     run_ingest_weather(game_date)
 
@@ -176,6 +180,92 @@ def run_post_lineup(game_date: date | None = None):
     return card
 
 
+def run_pre_game_snapshot(game_date: date | None = None):
+    """Capture closing lines ~10 min before first pitch."""
+    _setup_logging()
+    if game_date is None:
+        game_date = date.today()
+    log.info(f"=== PRE-GAME SNAPSHOT: {game_date} ===")
+    from pipeline.capture_closing_lines import run_closing_line_capture
+    return run_closing_line_capture(game_date)
+
+
+def run_post_game_settle(game_date: date | None = None):
+    """
+    Auto-settle results after games finish (~11 PM ET).
+    Also triggers ML retrain if enough new labeled samples have accumulated.
+    """
+    _setup_logging()
+    if game_date is None:
+        from datetime import timedelta
+        game_date = date.today() - timedelta(days=1)
+    log.info(f"=== POST-GAME SETTLE: {game_date} ===")
+    from pipeline.settle_results import run_auto_settle
+    result = run_auto_settle(game_date)
+
+    # ── Auto-retrain check ───────────────────────────────────────────────
+    # After settlement, check if we have enough labeled samples to retrain.
+    # Threshold: 100 samples to train, then retrain every 50 new samples.
+    _maybe_retrain()
+
+    return result
+
+
+def _maybe_retrain():
+    """
+    Retrain XGBoost model if enough new labeled samples exist.
+    - First train: 100 samples
+    - Subsequent retrains: every 50 new samples
+    Runs synchronously (takes ~10-30 seconds), safe after game settlement.
+    """
+    try:
+        conn = get_connection()
+        from data.schema import fetchone as db_fetchone
+
+        # Count total labeled samples
+        total = db_fetchone(conn, """
+            SELECT COUNT(*) as cnt
+            FROM model_predictions mp
+            JOIN bet_recommendations rec ON (
+                rec.bet_date = substr(mp.run_timestamp,1,10)
+                AND rec.bet_type = 'single'
+                AND rec.legs = json_array(mp.player_id)
+            )
+            JOIN bet_results br ON br.recommendation_id = rec.id
+            WHERE br.won IS NOT NULL
+        """)
+        total_samples = total["cnt"] if total else 0
+
+        # Count samples since last retrain
+        last_train = db_fetchone(conn,
+            "SELECT num_samples FROM training_log ORDER BY trained_at DESC LIMIT 1")
+        last_n = last_train["num_samples"] if last_train else 0
+        conn.close()
+
+        new_samples = total_samples - last_n
+        FIRST_TRAIN_THRESHOLD  = 100
+        RETRAIN_INTERVAL       = 50
+
+        should_train = (
+            (last_n == 0 and total_samples >= FIRST_TRAIN_THRESHOLD) or
+            (last_n > 0  and new_samples  >= RETRAIN_INTERVAL)
+        )
+
+        if should_train:
+            log.info(f"Auto-retraining: {total_samples} total samples ({new_samples} new)...")
+            from models.train import train_model
+            train_model()
+            log.info("Auto-retrain complete.")
+        else:
+            log.info(
+                f"Retrain check: {total_samples} samples total, "
+                f"{new_samples} since last train. "
+                f"Need {FIRST_TRAIN_THRESHOLD if last_n==0 else RETRAIN_INTERVAL} to trigger."
+            )
+    except Exception as e:
+        log.warning(f"Auto-retrain check failed (non-fatal): {e}")
+
+
 def run_full_day(game_date: date | None = None):
     """Run morning + post-lineup in one shot."""
     _setup_logging()
@@ -218,7 +308,9 @@ def record_result(recommendation_id: int, won: bool, payout: float, settled_at: 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="MLB HR Bot Workflow")
-    parser.add_argument("--stage", choices=["morning", "post_lineup", "full"], default="full")
+    parser.add_argument("--stage",
+        choices=["morning", "post_lineup", "full", "closing", "settle"],
+        default="full")
     parser.add_argument("--date", type=str, help="YYYY-MM-DD (default: today)")
     args = parser.parse_args()
     run_date = date.fromisoformat(args.date) if args.date else date.today()
@@ -226,5 +318,9 @@ if __name__ == "__main__":
         run_morning(run_date)
     elif args.stage == "post_lineup":
         run_post_lineup(run_date)
+    elif args.stage == "closing":
+        run_pre_game_snapshot(run_date)
+    elif args.stage == "settle":
+        run_post_game_settle(run_date)
     else:
         run_full_day(run_date)

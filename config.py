@@ -11,7 +11,8 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 LOG_DIR  = BASE_DIR / "logs"
 EXPORT_DIR = BASE_DIR / "exports"
-MODEL_DIR  = BASE_DIR / "models" / "saved"
+# Use /app/models/saved on Railway (persistent volume), fall back to local path
+MODEL_DIR  = Path(os.environ.get("MODEL_DIR", str(BASE_DIR / "models" / "saved")))
 
 # ── Database ───────────────────────────────────────────────────────────────
 # Railway injects DATABASE_URL automatically when you add a Postgres plugin.

@@ -88,6 +88,7 @@
     .full-width { grid-column: 1 / -1; }
 
     /* AI verdict badges */
+    .thin-edge-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 700; background: rgba(210,153,34,.18); color: #d29922; border: 1px solid rgba(210,153,34,.4); margin-left: 6px; vertical-align: middle; }
     .ai-verdict { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; letter-spacing: .3px; margin-bottom: 5px; }
     .ai-verdict.STRONG\ BET { background: rgba(63,185,80,.2); color: #3fb950; border: 1px solid rgba(63,185,80,.4); }
     .ai-verdict.LEAN\ BET   { background: rgba(88,166,255,.15); color: #58a6ff; border: 1px solid rgba(88,166,255,.3); }
@@ -117,9 +118,11 @@
   <button onclick="runPipeline('full')">▶ Run Full Day Now</button>
   <button class="secondary" onclick="runPipeline('morning')">🌅 Morning Run</button>
   <button class="secondary" onclick="runPipeline('post_lineup')">📋 Post-Lineup Run</button>
+  <button class="secondary" onclick="runPipeline('closing')" title="Capture closing lines ~10 min before first pitch">📸 Closing Lines</button>
+  <button class="secondary" onclick="runPipeline('settle')" title="Auto-settle yesterday's results after games finish">✅ Settle Results</button>
   <a href="/api/export/json?date={{ date }}"><button class="secondary">⬇ Export JSON</button></a>
   <a href="/api/export/csv?date={{ date }}"><button class="secondary">⬇ Export CSV</button></a>
-  <span class="spinner" id="spinner">⏳ Running pipeline…</span>
+  <span class="spinner" id="spinner">⏳ Running…</span>
 </div>
 
 <div class="main">
@@ -141,7 +144,9 @@
         <div class="pick">
           <div class="pick-label {{ p.label }}">{{ p.label }}</div>
           <div>
-            <div class="pick-name">{{ p.name }}</div>
+            <div class="pick-name">{{ p.name }}
+              {% if p.thin_edge %}<span class="thin-edge-badge" title="Thin edge — book may have the advantage. Consider sizing down.">⚠ Thin Edge</span>{% endif %}
+            </div>
             {% if p.ai_verdict %}
             <div>
               <span class="ai-verdict {{ p.ai_verdict }}">🤖 {{ p.ai_verdict }}{% if p.ai_grade %} · {{ p.ai_grade }}{% endif %}</span>

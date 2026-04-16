@@ -259,12 +259,14 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
         execute(conn, """
             INSERT INTO model_predictions(
                 game_pk,player_id,run_timestamp,run_stage,model_prob,calibrated_prob,
+                pre_ai_prob,
                 best_implied_prob,best_odds,best_bookmaker,edge,stability_score,
                 player_score,rank_label,reason_codes,projected_pa,batting_order,confirmed_lineup
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             rec["game_pk"], rec["player_id"], now, run_stage,
             rec["cal_prob"], rec["cal_prob"],
+            rec["cal_prob"],   # pre_ai_prob = model prob before any AI adjustment
             rec["implied_prob"], rec["best_odds"], rec["best_book"],
             rec["edge"], rec["stability"], rec["score"],
             rec["rank_label"], json.dumps(rec["reasons"]),

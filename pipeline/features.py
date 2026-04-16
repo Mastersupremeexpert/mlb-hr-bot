@@ -62,14 +62,39 @@ def get_batter_features(conn: sqlite3.Connection, player_id: int) -> dict:
                         "pa_count","bat_speed","blast_rate","flyball_rate","iso"]:
                 feats[f"{col}_{label}"] = None
 
+    # Advanced batter stats: HR/PA, HR/game, Z-score (from ingest_fangraphs)
+    adv = cur.execute("""
+        SELECT * FROM batter_advanced
+        WHERE player_id=?
+        ORDER BY season DESC LIMIT 1
+    """, (player_id,)).fetchone()
+
+    if adv:
+        feats["hr_per_pa_season"]  = _get(adv, "hr_per_pa")
+        feats["hr_per_game_season"]= _get(adv, "hr_per_game")
+        feats["z_score_due"]       = _get(adv, "z_score_due")
+        feats["season_hr"]         = _get(adv, "hr")
+        feats["season_pa"]         = _get(adv, "pa")
+        feats["season_games"]      = _get(adv, "games_played")
+        # Fill ISO/k_rate from advanced if not already set from Statcast
+        if not feats.get("iso_season"):
+            feats["iso_season"]    = _get(adv, "iso")
+        if not feats.get("k_rate_season"):
+            feats["k_rate_season"] = _get(adv, "k_rate")
+    else:
+        for k in ["hr_per_pa_season","hr_per_game_season","z_score_due",
+                  "season_hr","season_pa","season_games"]:
+            feats[k] = None
+
     return feats
 
 
 def get_pitcher_features(conn: sqlite3.Connection, pitcher_id: int) -> dict:
-    """Get pitcher vulnerability features."""
+    """Get pitcher vulnerability features — Statcast + advanced (HR/9, xFIP, K/9, BB/9)."""
     cur = conn.cursor()
     feats = {}
 
+    # Statcast EV/barrel data
     row = cur.execute("""
         SELECT * FROM pitcher_statcast
         WHERE player_id=? AND window_days=0
@@ -81,20 +106,35 @@ def get_pitcher_features(conn: sqlite3.Connection, pitcher_id: int) -> dict:
         feats["p_hard_hit_allowed"]    = _get(row, "hard_hit_rate_allowed")
         feats["p_avg_ev_allowed"]      = _get(row, "avg_exit_velocity_allowed")
         feats["p_launch_angle_allowed"]= _get(row, "avg_launch_angle_allowed")
-        feats["p_hr9"]                 = _get(row, "hr9")
-        feats["p_hr_per_bf"]           = _get(row, "hr_per_bf")
         feats["p_ff_usage"]            = _get(row, "ff_usage_pct")
         feats["p_sl_usage"]            = _get(row, "sl_usage_pct")
         feats["p_ch_usage"]            = _get(row, "ch_usage_pct")
         feats["p_avg_fb_velo"]         = _get(row, "avg_fb_velo")
-        feats["p_zone_rate"]           = _get(row, "zone_rate")
-        feats["p_whiff_rate"]          = _get(row, "whiff_rate")
         feats["p_days_rest"]           = _get(row, "days_rest")
     else:
         for k in ["p_barrel_rate_allowed","p_hard_hit_allowed","p_avg_ev_allowed",
-                  "p_launch_angle_allowed","p_hr9","p_hr_per_bf","p_ff_usage",
-                  "p_sl_usage","p_ch_usage","p_avg_fb_velo","p_zone_rate",
-                  "p_whiff_rate","p_days_rest"]:
+                  "p_launch_angle_allowed","p_ff_usage","p_sl_usage","p_ch_usage",
+                  "p_avg_fb_velo","p_days_rest"]:
+            feats[k] = None
+
+    # Advanced pitcher stats: HR/9, xFIP, K/9, BB/9 (from ingest_fangraphs)
+    adv = cur.execute("""
+        SELECT * FROM pitcher_advanced
+        WHERE player_id=?
+        ORDER BY season DESC LIMIT 1
+    """, (pitcher_id,)).fetchone()
+
+    if adv:
+        feats["p_hr9"]      = _get(adv, "hr9")
+        feats["p_xfip"]     = _get(adv, "xfip")
+        feats["p_k9"]       = _get(adv, "k9")
+        feats["p_bb9"]      = _get(adv, "bb9")
+        feats["p_era"]      = _get(adv, "era")
+        feats["p_whip"]     = _get(adv, "whip")
+        feats["p_hr_per_bf"]= _get(adv, "hr_per_bf")
+        feats["p_ip"]       = _get(adv, "ip")
+    else:
+        for k in ["p_hr9","p_xfip","p_k9","p_bb9","p_era","p_whip","p_hr_per_bf","p_ip"]:
             feats[k] = None
 
     return feats

@@ -27,21 +27,24 @@ FEATURE_LIST_PATH = MODEL_DIR / "feature_list.json"
 
 # ── Feature columns the model uses ──────────────────────────────────────────
 FEATURE_COLS = [
-    # Batter rolling
+    # Batter rolling (Statcast)
     "barrel_rate_last_14d", "barrel_rate_last_30d", "barrel_rate_season",
     "avg_ev_last_14d", "avg_ev_last_30d", "avg_ev_season",
     "hard_hit_last_14d", "hard_hit_last_30d",
     "xslg_last_14d", "xslg_season",
     "xwoba_last_14d", "xwoba_season",
-    "hr_per_pa_season",
     "flyball_rate_season",
     "k_rate_season", "bb_rate_season",
     "whiff_rate_season",
     "iso_season",
     "bat_speed_season",
-    # Pitcher vulnerability
+    # Batter advanced (MLB Stats API)
+    "hr_per_pa_season", "hr_per_game_season", "z_score_due",
+    # Pitcher vulnerability (Statcast)
     "p_barrel_rate_allowed", "p_hard_hit_allowed", "p_avg_ev_allowed",
-    "p_hr9", "p_hr_per_bf", "p_ff_usage",
+    "p_ff_usage",
+    # Pitcher advanced (MLB Stats API)
+    "p_hr9", "p_xfip", "p_k9", "p_bb9", "p_hr_per_bf",
     # Environment
     "park_hr_factor", "wind_hr_bonus", "temp_hr_bonus",
     "air_density_idx", "altitude_ft", "roof_open",
@@ -188,73 +191,97 @@ def load_calibrator():
 
 def heuristic_hr_prob(feats: dict) -> float:
     """
-    Rule-based HR probability per game.
-    Calibrated to MLB reality: league avg HR/game ~8-9% (4% HR/PA * ~3.8 PA).
-    Elite sluggers top out around 14-15% per game — NOT 20%+.
-    Hard ceiling enforced at 0.18.
-
-    Coefficient rationale (all additive on a per-game basis):
-    - barrel_rate: each 1pp above avg adds ~0.4pp HR prob (was 0.8 — halved)
-    - xSLG: each 0.1 above avg adds ~0.8pp (was 1.5pp — nearly halved)
-    - pitcher barrel rate: each 1pp above avg adds ~0.15pp (was 0.30 — halved)
-    All other coefficients similarly reduced to prevent bloat.
+    Rule-based HR probability per game — rebalanced with 5-source signal set.
+    
+    Weight distribution (approximate additive contributions):
+      Batter barrel/EV/xSLG   ~35%  (core batted-ball quality)
+      Pitcher HR/9 + xFIP      ~26%  (who you face matters as much as how you hit)
+      Batter HR/PA season rate ~12%  (actual track record this season)
+      Hard-hit / ISO / misc    ~15%  (supporting signals)
+      Z-score "due" factor      ~7%  (mild statistical validity over large samples)
+      Park + weather            mult  (multiplicative park factor)
+    
+    Hard ceiling: 0.18 (even Aaron Judge ~14-15% in best seasons)
+    Base: 0.085 (MLB league average ~8.5% HR/game)
     """
-    # Base: league average HR/game ~8.5%
-    # (MLB HR rate ~4.2% per PA * ~3.8 PA/game * park-neutral)
-    prob = 0.085
+    prob = 0.085  # league average base
 
-    # Barrel rate (league avg ~8%, elite ~15%)
+    # ── BATTER BATTED-BALL QUALITY (35%) ─────────────────────────────────
+    # Barrel rate — best single predictor of HR (league avg ~8%, elite ~15%)
     br = feats.get("barrel_rate_last_14d") or feats.get("barrel_rate_season") or 0.08
-    prob += (br - 0.08) * 0.40   # was 0.8 — halved
+    prob += (br - 0.08) * 0.40
 
     # Exit velocity (league avg ~88 mph, elite ~92+)
     ev = feats.get("avg_ev_last_14d") or feats.get("avg_ev_season") or 88.0
-    prob += (ev - 88.0) * 0.0015  # was 0.003 — halved
+    prob += (ev - 88.0) * 0.0015
 
     # xSLG (league avg ~.400, elite ~.600)
     xslg = feats.get("xslg_last_14d") or feats.get("xslg_season") or 0.400
-    prob += (xslg - 0.400) * 0.08  # was 0.15 — nearly halved
+    prob += (xslg - 0.400) * 0.08
 
     # Hard-hit rate (league avg ~37%, elite ~50%)
     hh = feats.get("hard_hit_last_14d") or feats.get("hard_hit_last_30d") or 0.37
-    prob += (hh - 0.37) * 0.05   # was 0.10 — halved
+    prob += (hh - 0.37) * 0.05
 
+    # ── PITCHER VULNERABILITY (26%) ───────────────────────────────────────
+    # HR/9: most direct measure — how many HRs this pitcher gives up per 9 innings
+    # League avg ~1.25, bad ~1.80+, elite ~0.60
+    p_hr9 = feats.get("p_hr9") or 1.25
+    prob += (p_hr9 - 1.25) * 0.018   # each 0.1 above avg adds ~0.18pp
+
+    # xFIP: expected FIP — pitchers with high xFIP are due to allow more HRs
+    # League avg ~4.10, bad ~4.80+, elite ~3.20
+    p_xfip = feats.get("p_xfip") or 4.10
+    prob += (p_xfip - 4.10) * 0.008  # each 0.1 above avg adds ~0.08pp
+
+    # Pitcher barrel rate allowed (Statcast — direct quality measure)
+    p_br = feats.get("p_barrel_rate_allowed") or 0.08
+    prob += (p_br - 0.08) * 0.12
+
+    # ── BATTER SEASON HR RATE (12%) ───────────────────────────────────────
+    # Actual HR/PA this season — real track record beats projected metrics
+    hr_pa = feats.get("hr_per_pa_season") or feats.get("hr_per_pa_last_30d") or 0.033
+    prob += (hr_pa - 0.033) * 0.80   # each 1pp above avg adds ~0.8pp
+
+    # ── Z-SCORE "DUE" FACTOR (7%) ────────────────────────────────────────
+    # Positive Z = fewer HRs than expected = statistically overdue
+    # Small weight — HR droughts don't meaningfully predict next HR
+    # but there is mild mean-reversion over large samples
+    z = feats.get("z_score_due") or 0.0
+    z_clamped = max(-1.5, min(1.5, z))   # cap at ±1.5 std to prevent outlier bloat
+    prob += z_clamped * 0.004
+
+    # ── SUPPORTING SIGNALS ────────────────────────────────────────────────
     # ISO (league avg ~.155, elite ~.280)
     iso = feats.get("iso_season") or 0.155
-    prob += (iso - 0.155) * 0.10  # was 0.20 — halved
+    prob += (iso - 0.155) * 0.08
 
-    # Pitcher barrel rate allowed (league avg ~8%, bad ~13%)
-    p_br = feats.get("p_barrel_rate_allowed") or 0.08
-    prob += (p_br - 0.08) * 0.15  # was 0.30 — halved
-
-    # Park factor (multiplicative — correct approach)
+    # ── PARK + WEATHER (multiplicative) ──────────────────────────────────
     pf = feats.get("park_hr_factor") or 1.0
     prob *= pf
 
-    # Wind / temp bonus (small additive — already small in features.py)
     prob += feats.get("wind_hr_bonus", 0.0)
     prob += feats.get("temp_hr_bonus", 0.0)
 
-    # Air density bonus (Coors Field effect)
+    # Air density (Coors Field effect)
     adi = feats.get("air_density_idx") or 1.0
-    prob += (1.0 - adi) * 0.025  # was 0.05 — halved
+    prob += (1.0 - adi) * 0.025
 
-    # PA opportunity scaling (4 PA = neutral, more PA = proportionally more chances)
+    # ── OPPORTUNITY ───────────────────────────────────────────────────────
     pa = feats.get("projected_pa") or 3.8
     prob *= (pa / 4.0)
 
-    # Batting order adjustment (small)
     slot = feats.get("batting_order") or 5
     if slot <= 2:
-        prob *= 1.03   # was 1.05
+        prob *= 1.03
     elif slot >= 8:
-        prob *= 0.97   # was 0.95
+        prob *= 0.97
 
     # K rate penalty
     k = feats.get("k_rate_season") or 0.22
-    prob -= max(0, (k - 0.22)) * 0.08  # was 0.15
+    prob -= max(0, (k - 0.22)) * 0.08
 
-    # Hard ceiling: even Aaron Judge doesn't hit 20%/game
+    # Hard ceiling — no exceptions
     return float(np.clip(prob, 0.02, 0.18))
 
 

@@ -273,6 +273,7 @@ CREATE TABLE IF NOT EXISTS model_predictions (
     projected_pa    DOUBLE PRECISION,
     batting_order   INTEGER,
     confirmed_lineup INTEGER DEFAULT 0,
+    pre_ai_prob     DOUBLE PRECISION,
     ai_analysis     TEXT
 );
 
@@ -308,6 +309,39 @@ CREATE TABLE IF NOT EXISTS closing_lines (
     closing_odds    INTEGER,
     closing_implied_prob DOUBLE PRECISION,
     locked_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pitcher_advanced (
+    player_id       BIGINT,
+    season          INTEGER,
+    ip              DOUBLE PRECISION,
+    hr9             DOUBLE PRECISION,
+    k9              DOUBLE PRECISION,
+    bb9             DOUBLE PRECISION,
+    era             DOUBLE PRECISION,
+    whip            DOUBLE PRECISION,
+    xfip            DOUBLE PRECISION,
+    hr_allowed      INTEGER,
+    hr_per_bf       DOUBLE PRECISION,
+    fetched_at      TEXT,
+    PRIMARY KEY (player_id, season)
+);
+
+CREATE TABLE IF NOT EXISTS batter_advanced (
+    player_id       BIGINT,
+    season          INTEGER,
+    hr              INTEGER,
+    pa              INTEGER,
+    games_played    INTEGER,
+    hr_per_pa       DOUBLE PRECISION,
+    hr_per_game     DOUBLE PRECISION,
+    z_score_due     DOUBLE PRECISION,
+    slg             DOUBLE PRECISION,
+    iso             DOUBLE PRECISION,
+    k_rate          DOUBLE PRECISION,
+    bb_rate         DOUBLE PRECISION,
+    fetched_at      TEXT,
+    PRIMARY KEY (player_id, season)
 );
 
 CREATE TABLE IF NOT EXISTS training_log (

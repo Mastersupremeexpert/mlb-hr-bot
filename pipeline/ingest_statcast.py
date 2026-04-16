@@ -53,7 +53,57 @@ def _bat_tracking_url(min_swings: int = 10) -> str:
             f"?type=batter&year={SEASON}&min={min_swings}&csv=true")
 
 
+# ── pybaseball fallback ───────────────────────────────────────────────────
+# Baseball Savant changes CSV column names ~2x per season without warning.
+# If Savant returns an empty or malformed DataFrame, we fall back to
+# pybaseball which maintains a stable API against the same data source.
+
+def _pybaseball_batter_season() -> pd.DataFrame:
+    """Fallback: pull Statcast leaderboard via pybaseball."""
+    try:
+        import pybaseball  # optional dependency
+        log.info("Falling back to pybaseball for batter Statcast data...")
+        df = pybaseball.statcast_batter_exitvelo_barrels(SEASON, minBBE=10)
+        if df is not None and not df.empty:
+            # Normalize column names to match our expected schema
+            rename = {
+                "player_id":        "player_id",
+                "last_name":        "last_name",
+                "first_name":       "first_name",
+                "avg_hit_speed":    "avg_hit_speed",
+                "avg_hit_angle":    "avg_hit_angle",
+                "brl_percent":      "brl_percent",
+                "ev95percent":      "ev95percent",
+                "anglesweetspotpercent": "anglesweetspotpercent",
+            }
+            df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
+            log.info(f"pybaseball fallback: {len(df)} rows")
+            return df
+    except ImportError:
+        log.warning("pybaseball not installed — cannot use fallback.")
+    except Exception as e:
+        log.warning(f"pybaseball fallback failed: {e}")
+    return pd.DataFrame()
+
+
+def _pybaseball_pitcher_season() -> pd.DataFrame:
+    """Fallback: pull pitcher Statcast data via pybaseball."""
+    try:
+        import pybaseball
+        log.info("Falling back to pybaseball for pitcher Statcast data...")
+        df = pybaseball.statcast_pitcher_exitvelo_barrels(SEASON, minBBE=5)
+        if df is not None and not df.empty:
+            return df
+    except ImportError:
+        pass
+    except Exception as e:
+        log.warning(f"pybaseball pitcher fallback failed: {e}")
+    return pd.DataFrame()
+
+
 # ── Generic fetch ─────────────────────────────────────────────────────────
+
+SAVANT_MIN_ROWS = 50   # if Savant returns fewer rows than this, assume broken
 
 def _fetch(url: str, label: str) -> pd.DataFrame:
     try:
@@ -61,6 +111,10 @@ def _fetch(url: str, label: str) -> pd.DataFrame:
                             headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         df = pd.read_csv(io.StringIO(resp.text))
+        # Sanity check: Savant sometimes returns a 200 with an error HTML page
+        if df.empty or len(df.columns) < 3:
+            log.warning(f"{label}: suspiciously small response — may be broken")
+            return pd.DataFrame()
         log.info(f"{label}: {len(df)} rows, cols={list(df.columns)}")
         return df
     except Exception as e:
@@ -190,10 +244,15 @@ def run_ingest_batter_statcast():
     """Pull Statcast batter data — season + rolling windows."""
     conn = get_connection()
 
-    # ── Fetch all three season leaderboards ──
+    # ── Fetch all three season leaderboards (Savant-first, pybaseball fallback) ──
     xstats_df  = _fetch(_expected_stats_url("batter", min_pa=10),  "xStats-batter-season")
     ev_df      = _fetch(_statcast_url("batter", min_bbe=10),        "EV-batter-season")
     bat_df     = _fetch(_bat_tracking_url(min_swings=10),           "BatTracking-batter-season")
+
+    # If EV leaderboard looks broken, fall back to pybaseball
+    if len(ev_df) < SAVANT_MIN_ROWS:
+        log.warning("Savant EV leaderboard looks broken — trying pybaseball fallback...")
+        ev_df = _pybaseball_batter_season()
 
     # Build player_id → row maps for join
     def _id_map(df: pd.DataFrame) -> dict[int, pd.Series]:
@@ -259,6 +318,11 @@ def run_ingest_pitcher_statcast():
 
     xstats_df = _fetch(_expected_stats_url("pitcher", min_pa=5), "xStats-pitcher-season")
     ev_df     = _fetch(_statcast_url("pitcher", min_bbe=10),      "EV-pitcher-season")
+
+    # Fallback if Savant looks broken
+    if len(ev_df) < SAVANT_MIN_ROWS:
+        log.warning("Savant pitcher EV looks broken — trying pybaseball fallback...")
+        ev_df = _pybaseball_pitcher_season()
     ev_map    = {}
     for _, row in ev_df.iterrows():
         pid = _pid(row)

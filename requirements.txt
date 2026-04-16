@@ -9,3 +9,4 @@ xgboost==2.0.3
 scikit-learn==1.4.2
 psycopg2-binary==2.9.9
 schedule==1.2.2
+pybaseball==2.2.7
