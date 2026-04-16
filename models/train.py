@@ -54,18 +54,22 @@ def _load_training_data():
     """Load historical predictions with known outcomes."""
     conn = get_connection()
     cur = conn.cursor()
-    rows = cur.execute("""
+    from data.schema import fetchall as db_fetchall
+    # Use JSON_EACH to properly match player_id inside the legs JSON array.
+    # This avoids the LIKE '%player_id%' bug where player 123 matches parlay [1234, 567].
+    rows = db_fetchall(conn, """
         SELECT mp.*, br.won
         FROM model_predictions mp
-        JOIN bet_results br ON (br.recommendation_id IN (
-            SELECT id FROM bet_recommendations
-            WHERE legs LIKE '%' || mp.player_id || '%'
-              AND bet_date = substr(mp.run_timestamp,1,10)
-        ))
+        JOIN bet_recommendations rec ON (
+            rec.bet_date = substr(mp.run_timestamp,1,10)
+            AND rec.bet_type = 'single'
+        )
+        JOIN bet_results br ON br.recommendation_id = rec.id
         WHERE br.won IS NOT NULL
-    """).fetchall()
+          AND rec.legs = json_array(mp.player_id)
+    """, ())
     conn.close()
-    return [dict(r) for r in rows]
+    return rows
 
 
 def _features_to_array(records: list[dict], feature_cols: list[str]) -> np.ndarray:
@@ -184,65 +188,74 @@ def load_calibrator():
 
 def heuristic_hr_prob(feats: dict) -> float:
     """
-    Rule-based HR probability using weighted Statcast signals.
-    Returns estimated probability between 0 and 1.
-    Calibrated to roughly match league average HR rate (~4-5% per PA at 3.7 PA/game ≈ 15-18% per game).
+    Rule-based HR probability per game.
+    Calibrated to MLB reality: league avg HR/game ~8-9% (4% HR/PA * ~3.8 PA).
+    Elite sluggers top out around 14-15% per game — NOT 20%+.
+    Hard ceiling enforced at 0.18.
+
+    Coefficient rationale (all additive on a per-game basis):
+    - barrel_rate: each 1pp above avg adds ~0.4pp HR prob (was 0.8 — halved)
+    - xSLG: each 0.1 above avg adds ~0.8pp (was 1.5pp — nearly halved)
+    - pitcher barrel rate: each 1pp above avg adds ~0.15pp (was 0.30 — halved)
+    All other coefficients similarly reduced to prevent bloat.
     """
-    # Base: league average HR/game ~14%
-    prob = 0.14
+    # Base: league average HR/game ~8.5%
+    # (MLB HR rate ~4.2% per PA * ~3.8 PA/game * park-neutral)
+    prob = 0.085
 
-    # Barrel rate boost (league avg ~8%)
+    # Barrel rate (league avg ~8%, elite ~15%)
     br = feats.get("barrel_rate_last_14d") or feats.get("barrel_rate_season") or 0.08
-    prob += (br - 0.08) * 0.8
+    prob += (br - 0.08) * 0.40   # was 0.8 — halved
 
-    # Exit velocity (league avg ~88 mph)
+    # Exit velocity (league avg ~88 mph, elite ~92+)
     ev = feats.get("avg_ev_last_14d") or feats.get("avg_ev_season") or 88.0
-    prob += (ev - 88.0) * 0.003
+    prob += (ev - 88.0) * 0.0015  # was 0.003 — halved
 
-    # xSLG (league avg ~.400)
+    # xSLG (league avg ~.400, elite ~.600)
     xslg = feats.get("xslg_last_14d") or feats.get("xslg_season") or 0.400
-    prob += (xslg - 0.400) * 0.15
+    prob += (xslg - 0.400) * 0.08  # was 0.15 — nearly halved
 
-    # Hard-hit rate (league avg ~37%)
+    # Hard-hit rate (league avg ~37%, elite ~50%)
     hh = feats.get("hard_hit_last_14d") or feats.get("hard_hit_last_30d") or 0.37
-    prob += (hh - 0.37) * 0.10
+    prob += (hh - 0.37) * 0.05   # was 0.10 — halved
 
-    # ISO (league avg ~.155)
+    # ISO (league avg ~.155, elite ~.280)
     iso = feats.get("iso_season") or 0.155
-    prob += (iso - 0.155) * 0.20
+    prob += (iso - 0.155) * 0.10  # was 0.20 — halved
 
-    # Pitcher barrel rate allowed (league avg ~8%)
+    # Pitcher barrel rate allowed (league avg ~8%, bad ~13%)
     p_br = feats.get("p_barrel_rate_allowed") or 0.08
-    prob += (p_br - 0.08) * 0.30
+    prob += (p_br - 0.08) * 0.15  # was 0.30 — halved
 
-    # Park factor
+    # Park factor (multiplicative — correct approach)
     pf = feats.get("park_hr_factor") or 1.0
     prob *= pf
 
-    # Wind / temp bonus
+    # Wind / temp bonus (small additive — already small in features.py)
     prob += feats.get("wind_hr_bonus", 0.0)
     prob += feats.get("temp_hr_bonus", 0.0)
 
-    # Air density (lower = more carry)
+    # Air density bonus (Coors Field effect)
     adi = feats.get("air_density_idx") or 1.0
-    prob += (1.0 - adi) * 0.05
+    prob += (1.0 - adi) * 0.025  # was 0.05 — halved
 
-    # PA opportunity scaling
+    # PA opportunity scaling (4 PA = neutral, more PA = proportionally more chances)
     pa = feats.get("projected_pa") or 3.8
     prob *= (pa / 4.0)
 
-    # Batting order: leadoff hitters get slightly more PAs
+    # Batting order adjustment (small)
     slot = feats.get("batting_order") or 5
     if slot <= 2:
-        prob *= 1.05
+        prob *= 1.03   # was 1.05
     elif slot >= 8:
-        prob *= 0.95
+        prob *= 0.97   # was 0.95
 
-    # K rate penalty (high strikeout = fewer balls in play)
+    # K rate penalty
     k = feats.get("k_rate_season") or 0.22
-    prob -= max(0, (k - 0.22)) * 0.15
+    prob -= max(0, (k - 0.22)) * 0.08  # was 0.15
 
-    return float(np.clip(prob, 0.02, 0.60))
+    # Hard ceiling: even Aaron Judge doesn't hit 20%/game
+    return float(np.clip(prob, 0.02, 0.18))
 
 
 def predict_proba(feats: dict) -> tuple[float, float]:
