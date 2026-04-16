@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+venv/
+env/
+.env
+
+# Database (never commit the local DB)
+data/*.db
+data/*.sqlite
+
+# Logs and exports (runtime only)
+logs/
+exports/
+
+# Model artifacts (retrained on server)
+models/saved/*.pkl
+models/saved/*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Windows launchers (not needed on cloud)
+*.bat
