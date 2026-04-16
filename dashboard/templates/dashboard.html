@@ -121,6 +121,7 @@
   <button class="secondary" onclick="runPipeline('post_lineup')">📋 Post-Lineup Run</button>
   <button class="secondary" onclick="runPipeline('closing')" title="Capture closing lines ~10 min before first pitch">📸 Closing Lines</button>
   <button class="secondary" onclick="runPipeline('settle')" title="Auto-settle yesterday's results after games finish">✅ Settle Results</button>
+  <button class="secondary" onclick="runMigrateIds()" title="One-time fix: repoint fake player IDs to real MLBAM IDs">🔧 Fix Player IDs</button>
   <a href="/api/export/json?date={{ date }}"><button class="secondary">⬇ Export JSON</button></a>
   <a href="/api/export/csv?date={{ date }}"><button class="secondary">⬇ Export CSV</button></a>
   <span class="spinner" id="spinner">⏳ Running…</span>
@@ -353,6 +354,24 @@
     const t = document.getElementById('toast');
     t.style.display = 'block';
     setTimeout(() => t.style.display = 'none', 5000);
+  }
+
+  async function runMigrateIds() {
+    if (!confirm('Fix Player IDs: repoint fake hash IDs to real MLBAM IDs.\nThis is safe to run multiple times. Continue?')) return;
+    document.getElementById('spinner').classList.add('show');
+    try {
+      const resp = await fetch('/api/admin/migrate_ids', {method:'POST'});
+      const data = await resp.json();
+      if (data.status === 'no_migration_needed') {
+        alert('No fake IDs found — DB is already clean!');
+      } else {
+        alert(`Done!\nMapped: ${data.mappings} players\nDeleted orphans: ${data.hash_players_deleted}\n\nNow hit Run Full Day Now to refresh picks with real odds.`);
+      }
+    } catch(e) {
+      alert('Migration failed: ' + e.message);
+    } finally {
+      document.getElementById('spinner').classList.remove('show');
+    }
   }
 
   // Auto-refresh every 5 minutes if pipeline is running
