@@ -1,6 +1,11 @@
 """
 MLB Home Run Bot — Sportsbook Odds Ingestion
 Uses The Odds API (https://the-odds-api.com) — free tier: 500 req/month.
+
+De-vig method: Additive normalization (Shin approximation).
+For each player we collect YES (over) and NO (under) lines from the same book,
+compute raw implieds, then divide each by their sum to strip the book's hold.
+Only the vig-free YES implied probability is stored.
 """
 
 import sys, os
@@ -22,20 +27,46 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def american_to_implied(american_odds: int) -> float:
-    """Convert American odds to implied probability (without vig)."""
+def american_to_implied_raw(american_odds: int) -> float:
+    """Raw implied probability — still contains vig."""
     if american_odds >= 0:
         return 100 / (american_odds + 100)
     else:
         return abs(american_odds) / (abs(american_odds) + 100)
 
 
+def devig_implied(yes_odds: int, no_odds: int) -> float:
+    """
+    Additive de-vig (Shin method approximation).
+    Given the Yes (over) and No (under) American odds for the same market,
+    returns the vig-free probability for the Yes side.
+
+    Raw implieds sum to >1.0 (the overround = book's hold).
+    Dividing each by their sum removes the hold proportionally.
+    """
+    p_yes_raw = american_to_implied_raw(yes_odds)
+    p_no_raw  = american_to_implied_raw(no_odds)
+    total = p_yes_raw + p_no_raw
+    if total <= 0:
+        return p_yes_raw  # fallback
+    return p_yes_raw / total
+
+
+def devig_single(yes_odds: int) -> float:
+    """
+    When we only have the YES side, estimate vig-free prob by applying
+    a conservative 10% hold reduction (typical for HR props on major books).
+    This is less accurate than two-sided de-vig but better than no de-vig.
+    """
+    raw = american_to_implied_raw(yes_odds)
+    # HR props typically have 10-15% hold; 12% is conservative middle
+    return raw / 1.12
+
+
 def _normalize_name(name: str) -> str:
     """Strip accents, lowercase, remove punctuation for fuzzy matching."""
-    # Normalize unicode (e.g. é → e, ñ → n, ü → u)
     nfkd = unicodedata.normalize("NFKD", name)
     ascii_name = "".join(c for c in nfkd if not unicodedata.combining(c))
-    # Lowercase and strip non-alpha chars except spaces
     return " ".join(ascii_name.lower().split())
 
 
@@ -48,19 +79,17 @@ def _find_player_id(conn, name: str) -> Optional[int]:
       3. Last name + first initial match
       4. Last name only (if unique)
     """
-    # 1. Exact match
     row = fetchone(conn, "SELECT player_id FROM players WHERE full_name=?", (name,))
     if row:
         return row["player_id"]
 
-    # 2. Accent-normalized match — compare normalized versions
     norm_input = _normalize_name(name)
     all_players = fetchall(conn, "SELECT player_id, full_name FROM players", ())
+
     for p in all_players:
         if _normalize_name(p["full_name"]) == norm_input:
             return p["player_id"]
 
-    # 3. Last name + first initial match (handles "R. Acuña Jr." vs "Ronald Acuna Jr.")
     parts = name.split()
     if len(parts) >= 2:
         last = _normalize_name(parts[-1])
@@ -76,7 +105,6 @@ def _find_player_id(conn, name: str) -> Optional[int]:
         if len(matches) == 1:
             return matches[0]
 
-        # 4. Last name only (if unique)
         last_matches = [
             p["player_id"] for p in all_players
             if _normalize_name(p["full_name"].split()[-1]) == last
@@ -88,7 +116,6 @@ def _find_player_id(conn, name: str) -> Optional[int]:
 
 
 def _resolve_game_pk(conn, home_team: str, away_team: str, game_date: str) -> Optional[int]:
-    """Try to match game by team name / abbr."""
     rows = fetchall(conn, """
         SELECT g.game_pk
         FROM games g
@@ -105,7 +132,7 @@ def _resolve_game_pk(conn, home_team: str, away_team: str, game_date: str) -> Op
 
 
 def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[date] = None):
-    """Pull HR props from The Odds API and store in sportsbook_odds."""
+    """Pull HR props from The Odds API and store de-vigged implied probabilities."""
     if not ODDS_API_KEY or ODDS_API_KEY == "YOUR_ODDS_API_KEY_HERE":
         log.warning("Odds API key not set. Skipping odds ingestion.")
         return
@@ -115,7 +142,6 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
 
     conn = get_connection()
 
-    # Fetch events
     events_url = f"{ODDS_API_BASE}/sports/{ODDS_SPORT}/events"
     try:
         events_resp = requests.get(events_url, params={
@@ -146,7 +172,6 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
         away_team = event.get("away_team", "")
         game_pk = _resolve_game_pk(conn, home_team, away_team, game_date_str)
 
-        # Fetch player props for this event
         props_url = f"{ODDS_API_BASE}/sports/{ODDS_SPORT}/events/{event_id}/odds"
         try:
             props_resp = requests.get(props_url, params={
@@ -164,22 +189,46 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
 
         now = _now_utc()
         count = 0
+
         for bookmaker in props_data.get("bookmakers", []):
             book_name = bookmaker["key"]
             for market in bookmaker.get("markets", []):
                 if market.get("key") != "batter_home_runs":
                     continue
+
+                # Build YES/NO lookup per player for two-sided de-vig
+                # Outcomes typically have "Over" (yes) and "Under" (no) sides
+                yes_odds_map: dict[str, int] = {}
+                no_odds_map:  dict[str, int] = {}
+
                 for outcome in market.get("outcomes", []):
                     player_name = outcome.get("description") or outcome.get("name", "")
                     odds_val = outcome.get("price")
+                    side = (outcome.get("name") or "").lower()
                     if not player_name or odds_val is None:
                         continue
+                    if "over" in side or side == player_name.lower():
+                        yes_odds_map[player_name] = int(odds_val)
+                    elif "under" in side or "no" in side:
+                        no_odds_map[player_name] = int(odds_val)
+                    else:
+                        # HR props sometimes only list YES side
+                        yes_odds_map[player_name] = int(odds_val)
 
+                # Now store with de-vigged implied prob
+                for player_name, yes_odds in yes_odds_map.items():
                     total_stored += 1
-                    player_id = _find_player_id(conn, player_name)
 
+                    # De-vig
+                    if player_name in no_odds_map:
+                        implied = devig_implied(yes_odds, no_odds_map[player_name])
+                        log.debug(f"  Two-sided de-vig {player_name}: raw={american_to_implied_raw(yes_odds):.3f} -> fair={implied:.3f}")
+                    else:
+                        implied = devig_single(yes_odds)
+                        log.debug(f"  Single-sided de-vig {player_name}: raw={american_to_implied_raw(yes_odds):.3f} -> fair={implied:.3f}")
+
+                    player_id = _find_player_id(conn, player_name)
                     if not player_id:
-                        # Insert as placeholder so we at least store the odds
                         fake_id = abs(hash(player_name)) % 9000000 + 1000000
                         try:
                             execute(conn, """
@@ -191,11 +240,9 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
                         except Exception:
                             pass
                         player_id = fake_id
-                        log.debug(f"  No DB match for '{player_name}' — inserted as placeholder")
                     else:
                         total_matched += 1
 
-                    implied = american_to_implied(int(odds_val))
                     try:
                         execute(conn, """
                             INSERT INTO sportsbook_odds(
@@ -204,7 +251,7 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
                             ) VALUES(?,?,?,?,?,?,?,?)
                         """, (
                             game_pk, player_id, book_name,
-                            "batter_home_runs", int(odds_val), implied, now, snapshot_type
+                            "batter_home_runs", yes_odds, implied, now, snapshot_type
                         ))
                         total_inserted += 1
                         count += 1
@@ -212,31 +259,28 @@ def fetch_and_store_odds(snapshot_type: str = "pre_lineup", game_date: Optional[
                         log.warning(f"Failed to insert odds for {player_name}: {e}")
 
         conn.commit()
-        log.info(f"  {away_team} @ {home_team}: stored {count} odds entries.")
+        log.info(f"  {away_team} @ {home_team}: stored {count} de-vigged odds entries.")
 
     conn.close()
-    log.info(f"Odds ingestion complete: {total_stored} players seen, {total_matched} matched to DB, {total_inserted} rows inserted.")
+    log.info(f"Odds done: {total_stored} seen, {total_matched} DB-matched, {total_inserted} inserted.")
 
 
 def get_best_odds_for_player(player_id: int, game_pk: Optional[int] = None,
                               snapshot_type: str = "pre_lineup") -> dict:
-    """Return best (highest payout = lowest american_odds for favorites, highest for dogs) odds."""
     conn = get_connection()
     if game_pk:
         row = fetchone(conn, """
             SELECT bookmaker, american_odds, implied_prob
             FROM sportsbook_odds
             WHERE player_id=? AND (game_pk=? OR game_pk IS NULL) AND snapshot_type=?
-            ORDER BY american_odds DESC
-            LIMIT 1
+            ORDER BY american_odds DESC LIMIT 1
         """, (player_id, game_pk, snapshot_type))
     else:
         row = fetchone(conn, """
             SELECT bookmaker, american_odds, implied_prob
             FROM sportsbook_odds
             WHERE player_id=? AND snapshot_type=?
-            ORDER BY american_odds DESC
-            LIMIT 1
+            ORDER BY american_odds DESC LIMIT 1
         """, (player_id, snapshot_type))
     conn.close()
     return row if row else {}
