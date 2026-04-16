@@ -131,11 +131,10 @@ Respond ONLY with this JSON (no markdown):
         pick["ai_bear"]            = ai.get("bear_case", "")
         pick["ai_sharp"]           = ai.get("sharp_note", "")
         pick["ai_grade"]           = ai.get("ai_grade", label)
-        pick["ai_confidence_adj"]  = float(ai.get("confidence_adjustment", 0.0))
-        # Apply AI confidence adjustment to calibrated prob
-        pick["cal_prob"] = round(
-            max(0.01, min(0.99, pick["cal_prob"] + pick["ai_confidence_adj"])), 4
-        )
+        # Store adjustment for transparency but do NOT apply it to cal_prob.
+        # The quantitative model's probability should not be overridden by LLM pattern-matching.
+        # A/B test this after 6 weeks of paper trading to measure CLV impact.
+        pick["ai_confidence_adj"] = float(ai.get("confidence_adjustment", 0.0))
         log.info(f"  AI [{label}] {player}: {pick['ai_verdict']} | {pick['ai_one_liner']}")
     except Exception as e:
         log.warning(f"AI JSON parse failed for {player}: {e} | raw: {raw[:200]}")
