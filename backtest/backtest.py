@@ -13,7 +13,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from data.schema import get_connection
+from data.schema import get_connection, execute, fetchall
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +102,6 @@ def run_backtest(
         bet_types = ["single", "parlay_2", "parlay_3", "parlay_4"]
 
     conn = get_connection()
-    cur  = conn.cursor()
 
     where_clauses = ["br.won IS NOT NULL"]
     params = []
@@ -114,19 +113,15 @@ def run_backtest(
         params.append(end_date)
     where = " AND ".join(where_clauses)
 
-    rows = cur.execute(f"""
+    rows = fetchall(conn, f"""
         SELECT rec.*, br.won, br.payout, br.profit, br.settled_at
         FROM bet_recommendations rec
         JOIN bet_results br ON br.recommendation_id = rec.id
         WHERE {where}
         ORDER BY rec.bet_date
-    """, params).fetchall()
+    """, params if params else None)
 
-    # ── Fixed SQL: exact JSON match instead of LIKE ──────────────────────
-    # Old bug: rec.legs LIKE '%' || mp.player_id || '%'
-    #   → player 123 would match parlay [1234, 567]
-    # Fix: use json_array(mp.player_id) for exact single-leg match
-    pred_rows = cur.execute("""
+    pred_rows = fetchall(conn, """
         SELECT mp.calibrated_prob,
                mp.pre_ai_prob,
                mp.best_implied_prob,
@@ -144,7 +139,7 @@ def run_backtest(
             AND cl.game_pk = mp.game_pk
         )
         WHERE br.won IS NOT NULL
-    """).fetchall()
+    """, None)
     conn.close()
 
     all_probs    = [r["calibrated_prob"] for r in pred_rows if r["calibrated_prob"]]

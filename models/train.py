@@ -56,7 +56,6 @@ FEATURE_COLS = [
 def _load_training_data():
     """Load historical predictions with known outcomes."""
     conn = get_connection()
-    cur = conn.cursor()
     from data.schema import fetchall as db_fetchall
     # Use JSON_EACH to properly match player_id inside the legs JSON array.
     # This avoids the LIKE '%player_id%' bug where player 123 matches parlay [1234, 567].

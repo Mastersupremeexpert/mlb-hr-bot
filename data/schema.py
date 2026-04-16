@@ -69,6 +69,15 @@ def execute(conn, sql: str, params=None):
         # Also handle any remaining INSERT OR IGNORE without ON CONFLICT (belt+suspenders)
         sql = re.sub(r'INSERT\s+OR\s+IGNORE\s+INTO', 'INSERT INTO', sql, flags=re.IGNORECASE)
         sql = sql.replace("INSERT OR REPLACE INTO", "INSERT INTO")
+        # SQLite json_array(x) → Postgres cast('[' || x || ']' as text) for legs TEXT matching
+        # legs is stored as json.dumps([player_id]) = '[12345]' (a TEXT column)
+        # So we compare legs = '[' || player_id::text || ']'
+        sql = re.sub(
+            r'\bjson_array\(([^)]+)\)',
+            r"('[' || (\1)::text || ']')",
+            sql, flags=re.IGNORECASE
+        )
+        # SQLite AUTOINCREMENT already handled above
     cur = conn.cursor()
     if params:
         cur.execute(sql, params)

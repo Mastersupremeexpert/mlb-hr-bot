@@ -12,7 +12,7 @@ import requests
 from datetime import date, datetime, timezone
 
 from config import WEATHER_BASE
-from data.schema import get_connection
+from data.schema import get_connection, execute, fetchall
 
 log = logging.getLogger(__name__)
 
@@ -138,14 +138,13 @@ def run_ingest_weather(game_date: date | None = None):
         game_date = date.today()
 
     conn = get_connection()
-    cur = conn.cursor()
-    games = cur.execute("""
+    games = fetchall(conn, """
         SELECT g.game_pk, g.venue_id, g.game_time_utc,
                v.latitude, v.longitude, v.altitude_ft, v.roof_type
         FROM games g
         LEFT JOIN venues v ON g.venue_id = v.venue_id
         WHERE g.game_date=?
-    """, (game_date.strftime("%Y-%m-%d"),)).fetchall()
+    """, (game_date.strftime("%Y-%m-%d"),))
 
     count = 0
     for g in games:
@@ -161,7 +160,7 @@ def run_ingest_weather(game_date: date | None = None):
             roof_type=g["roof_type"] or "open",
         )
         if w:
-            cur.execute("""
+            execute(conn, """
                 INSERT INTO environment_features(
                     game_pk,venue_id,fetched_at,game_time_local,temperature_f,
                     humidity_pct,wind_speed_mph,wind_dir_deg,wind_dir_label,

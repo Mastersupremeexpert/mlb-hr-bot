@@ -12,7 +12,7 @@ from datetime import date
 from typing import Optional
 import sqlite3
 
-from data.schema import get_connection
+from data.schema import get_connection, execute, fetchall
 
 log = logging.getLogger(__name__)
 
@@ -25,18 +25,18 @@ def _get(row, key, default=None):
         return default
 
 
-def get_batter_features(conn: sqlite3.Connection, player_id: int) -> dict:
+def get_batter_features(conn, player_id: int) -> dict:
     """Aggregate Statcast features for a batter across rolling windows."""
-    cur = conn.cursor()
     feats = {}
 
     for window in [0, 7, 14, 30]:  # 0 = season
         label = f"season" if window == 0 else f"last_{window}d"
-        row = cur.execute("""
+        rows = fetchall(conn, """
             SELECT * FROM batter_statcast
             WHERE player_id=? AND window_days=? AND pitcher_hand='overall'
             ORDER BY fetched_at DESC LIMIT 1
-        """, (player_id, window)).fetchone()
+        """, (player_id, window))
+        row = rows[0] if rows else None
 
         if row:
             feats[f"barrel_rate_{label}"]    = _get(row, "barrel_rate")
@@ -63,11 +63,12 @@ def get_batter_features(conn: sqlite3.Connection, player_id: int) -> dict:
                 feats[f"{col}_{label}"] = None
 
     # Advanced batter stats: HR/PA, HR/game, Z-score (from ingest_fangraphs)
-    adv = cur.execute("""
+    adv_rows = fetchall(conn, """
         SELECT * FROM batter_advanced
         WHERE player_id=?
         ORDER BY season DESC LIMIT 1
-    """, (player_id,)).fetchone()
+    """, (player_id,))
+    adv = adv_rows[0] if adv_rows else None
 
     if adv:
         feats["hr_per_pa_season"]  = _get(adv, "hr_per_pa")
@@ -89,17 +90,17 @@ def get_batter_features(conn: sqlite3.Connection, player_id: int) -> dict:
     return feats
 
 
-def get_pitcher_features(conn: sqlite3.Connection, pitcher_id: int) -> dict:
+def get_pitcher_features(conn, pitcher_id: int) -> dict:
     """Get pitcher vulnerability features — Statcast + advanced (HR/9, xFIP, K/9, BB/9)."""
-    cur = conn.cursor()
     feats = {}
 
     # Statcast EV/barrel data
-    row = cur.execute("""
+    rows = fetchall(conn, """
         SELECT * FROM pitcher_statcast
         WHERE player_id=? AND window_days=0
         ORDER BY fetched_at DESC LIMIT 1
-    """, (pitcher_id,)).fetchone()
+    """, (pitcher_id,))
+    row = rows[0] if rows else None
 
     if row:
         feats["p_barrel_rate_allowed"] = _get(row, "barrel_rate_allowed")
@@ -118,11 +119,12 @@ def get_pitcher_features(conn: sqlite3.Connection, pitcher_id: int) -> dict:
             feats[k] = None
 
     # Advanced pitcher stats: HR/9, xFIP, K/9, BB/9 (from ingest_fangraphs)
-    adv = cur.execute("""
+    adv_rows = fetchall(conn, """
         SELECT * FROM pitcher_advanced
         WHERE player_id=?
         ORDER BY season DESC LIMIT 1
-    """, (pitcher_id,)).fetchone()
+    """, (pitcher_id,))
+    adv = adv_rows[0] if adv_rows else None
 
     if adv:
         feats["p_hr9"]      = _get(adv, "hr9")
@@ -140,19 +142,19 @@ def get_pitcher_features(conn: sqlite3.Connection, pitcher_id: int) -> dict:
     return feats
 
 
-def get_environment_features(conn: sqlite3.Connection, game_pk: int, batter_hand: str = "R") -> dict:
+def get_environment_features(conn, game_pk: int, batter_hand: str = "R") -> dict:
     """Get park + weather features."""
-    cur = conn.cursor()
     feats = {}
 
-    env = cur.execute("""
+    env_rows = fetchall(conn, """
         SELECT e.*, v.hr_factor_rhb, v.hr_factor_lhb, v.altitude_ft
         FROM environment_features e
         LEFT JOIN games g ON e.game_pk = g.game_pk
         LEFT JOIN venues v ON e.venue_id = v.venue_id
         WHERE e.game_pk=?
         ORDER BY e.fetched_at DESC LIMIT 1
-    """, (game_pk,)).fetchone()
+    """, (game_pk,))
+    env = env_rows[0] if env_rows else None
 
     if env:
         feats["temp_f"]           = _get(env, "temperature_f", 72.0)
@@ -187,16 +189,16 @@ def get_environment_features(conn: sqlite3.Connection, game_pk: int, batter_hand
     return feats
 
 
-def get_opportunity_features(conn: sqlite3.Connection, player_id: int, game_pk: int) -> dict:
+def get_opportunity_features(conn, player_id: int, game_pk: int) -> dict:
     """Lineup slot, PA projection, team totals."""
-    cur = conn.cursor()
     feats = {}
 
-    lineup = cur.execute("""
+    lineup_rows = fetchall(conn, """
         SELECT batting_order, confirmed, position
         FROM lineups WHERE player_id=? AND game_pk=?
         ORDER BY confirmed DESC LIMIT 1
-    """, (player_id, game_pk)).fetchone()
+    """, (player_id, game_pk))
+    lineup = lineup_rows[0] if lineup_rows else None
 
     if lineup:
         slot = _get(lineup, "batting_order", 5)
@@ -241,9 +243,8 @@ def build_all_feature_vectors(game_date: date | None = None) -> list[dict]:
         game_date = date.today()
 
     conn = get_connection()
-    cur = conn.cursor()
 
-    lineups = cur.execute("""
+    lineups = fetchall(conn, """
         SELECT l.player_id, l.game_pk, l.batting_order, p.bats,
                pp.pitcher_id
         FROM lineups l
@@ -253,7 +254,7 @@ def build_all_feature_vectors(game_date: date | None = None) -> list[dict]:
              AND pp.side != CASE WHEN l.team_id = g.home_team_id THEN 'home' ELSE 'away' END)
         WHERE g.game_date=?
         ORDER BY l.game_pk, l.batting_order
-    """, (game_date.strftime("%Y-%m-%d"),)).fetchall()
+    """, (game_date.strftime("%Y-%m-%d"),))
 
     vectors = []
     for row in lineups:
