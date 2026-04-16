@@ -222,6 +222,35 @@ def get_opportunity_features(conn, player_id: int, game_pk: int) -> dict:
     return feats
 
 
+def get_line_movement_feature(conn, player_id: int, game_pk: int) -> float:
+    """
+    Returns line_move_since_open: the change in implied probability from
+    the earliest morning snapshot to the most recent pre_lineup snapshot.
+    Positive = line moved toward YES (sharp/public money backing HR).
+    Returns 0.0 if insufficient data.
+    """
+    opening_rows = fetchall(conn, """
+        SELECT implied_prob FROM sportsbook_odds
+        WHERE player_id=? AND (game_pk=? OR game_pk IS NULL)
+          AND snapshot_type='morning'
+        ORDER BY fetched_at ASC LIMIT 1
+    """, (player_id, game_pk))
+
+    current_rows = fetchall(conn, """
+        SELECT implied_prob FROM sportsbook_odds
+        WHERE player_id=? AND (game_pk=? OR game_pk IS NULL)
+          AND snapshot_type IN ('pre_lineup', 'closing')
+        ORDER BY fetched_at DESC LIMIT 1
+    """, (player_id, game_pk))
+
+    if opening_rows and current_rows:
+        opening_prob = opening_rows[0]["implied_prob"]
+        current_prob = current_rows[0]["implied_prob"]
+        if opening_prob and current_prob:
+            return round(float(current_prob) - float(opening_prob), 4)
+    return 0.0
+
+
 def build_feature_vector(conn: sqlite3.Connection, player_id: int, game_pk: int,
                           pitcher_id: Optional[int] = None, batter_hand: str = "R") -> dict:
     """Combine all feature groups into one dict for the model."""
@@ -231,6 +260,7 @@ def build_feature_vector(conn: sqlite3.Connection, player_id: int, game_pk: int,
         feats.update(get_pitcher_features(conn, pitcher_id))
     feats.update(get_environment_features(conn, game_pk, batter_hand))
     feats.update(get_opportunity_features(conn, player_id, game_pk))
+    feats["line_move_since_open"] = get_line_movement_feature(conn, player_id, game_pk)
     return feats
 
 

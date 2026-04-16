@@ -35,6 +35,7 @@
 
     /* ABCD picks */
     .pick { padding: 14px 16px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 40px 1fr auto; gap: 12px; align-items: start; }
+    .pick-thin-edge { border-left: 3px solid var(--yellow); background: rgba(210,153,34,.06); }
     .pick:last-child { border-bottom: none; }
     .pick-label { font-size: 22px; font-weight: 900; text-align: center; }
     .pick-label.A { color: #f8c000; }
@@ -141,7 +142,7 @@
     <div class="card-body">
       {% if has_data %}
         {% for p in picks %}
-        <div class="pick">
+        <div class="pick{% if p.thin_edge %} pick-thin-edge{% endif %}">
           <div class="pick-label {{ p.label }}">{{ p.label }}</div>
           <div>
             <div class="pick-name">{{ p.name }}

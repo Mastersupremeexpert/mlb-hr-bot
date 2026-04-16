@@ -79,7 +79,7 @@ def correlation_risk(feats: dict, existing_picks: list[dict]) -> float:
     return min(1.0, risk)
 
 
-def generate_reason_codes(feats: dict, cal_prob: float, implied_prob: float) -> list[str]:
+def generate_reason_codes(feats: dict, cal_prob: float, implied_prob: float, line_move: float = 0.0) -> list[str]:
     """Generate human-readable reason codes for a pick."""
     reasons = []
 
@@ -129,6 +129,13 @@ def generate_reason_codes(feats: dict, cal_prob: float, implied_prob: float) -> 
         reasons.append(f"Strong price edge ({edge:.1%} above implied)")
     elif edge >= 0.03:
         reasons.append(f"Positive price edge ({edge:.1%})")
+
+    if line_move >= 0.015:
+        reasons.append(f"Line moving toward YES +{line_move:.1%} — possible sharp action")
+    elif line_move >= 0.008:
+        reasons.append(f"Slight line movement toward YES (+{line_move:.1%})")
+    elif line_move <= -0.015:
+        reasons.append(f"Line moving away from YES ({line_move:.1%}) — fade signal")
 
     if not reasons:
         if implied_prob == 0.15:  # fallback — no real odds yet
@@ -210,15 +217,26 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
         # Correlation risk vs already-seen picks
         corr = correlation_risk(feats, results)
 
-        # Score
-        score = player_score(edge, cal_prob, stab, corr)
-
         # Opportunity checks
         confirmed = feats.get("confirmed_lineup", 0)
         proj_pa = feats.get("projected_pa", 3.8)
 
+        # Line movement (sharp money signal)
+        line_move = feats.get("line_move_since_open", 0.0) or 0.0
+
+        # Score + line movement bonus
+        line_move_bonus = 0.0
+        if line_move >= 0.015:
+            line_move_bonus = 0.03   # strong sharp signal
+        elif line_move >= 0.008:
+            line_move_bonus = 0.015  # mild movement worth noting
+        elif line_move <= -0.015:
+            line_move_bonus = -0.02  # line moving away — fade signal
+
+        score = player_score(edge, cal_prob, stab, corr) + line_move_bonus
+
         # Reason codes
-        reasons = generate_reason_codes(feats, cal_prob, impl_prob)
+        reasons = generate_reason_codes(feats, cal_prob, impl_prob, line_move)
 
         rec = {
             "player_id": pid,
@@ -237,6 +255,7 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
             "reasons": reasons,
             "pitcher_id": feats.get("pitcher_id"),
             "rank_label": None,
+            "line_move": round(line_move, 4),
         }
         results.append(rec)
 
@@ -279,8 +298,9 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
                 game_pk,player_id,run_timestamp,run_stage,model_prob,calibrated_prob,
                 pre_ai_prob,
                 best_implied_prob,best_odds,best_bookmaker,edge,stability_score,
-                player_score,rank_label,reason_codes,projected_pa,batting_order,confirmed_lineup
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                player_score,rank_label,reason_codes,projected_pa,batting_order,confirmed_lineup,
+                line_move_since_open
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             rec["game_pk"], rec["player_id"], now, run_stage,
             rec["cal_prob"], rec["cal_prob"],
@@ -289,6 +309,7 @@ def run_ranking(game_date: Optional[date] = None, run_stage: str = "final") -> l
             rec["edge"], rec["stability"], rec["score"],
             rec["rank_label"], json.dumps(rec["reasons"]),
             rec["proj_pa"], rec["batting_order"], rec["confirmed"],
+            rec["line_move"],
         ))
 
     conn.commit()

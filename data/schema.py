@@ -413,6 +413,8 @@ _MIGRATIONS = [
     ("batter_advanced",   "games_played",         "INTEGER"),
     ("batter_advanced",   "iso",                  "DOUBLE PRECISION"),
     ("batter_advanced",   "k_rate",               "DOUBLE PRECISION"),
+    # Line movement feature — stored on model_predictions for ML training
+    ("model_predictions", "line_move_since_open",  "DOUBLE PRECISION"),
 ]
 
 
